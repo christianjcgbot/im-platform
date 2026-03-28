@@ -18,6 +18,31 @@
 	function removeVariant(i: number) { variants = variants.filter((_, idx) => idx !== i); }
 
 	let uploading = $state(false);
+	let images = $state([...data.images].sort((a, b) => a.position - b.position));
+	let sortedImages = $derived(images);
+	let dragIdx = $state<number | null>(null);
+
+	function onDragStart(i: number) { dragIdx = i; }
+	function onDragOver(e: DragEvent, i: number) {
+		e.preventDefault();
+		if (dragIdx === null || dragIdx === i) return;
+		const reordered = [...images];
+		const [moved] = reordered.splice(dragIdx, 1);
+		reordered.splice(i, 0, moved);
+		images = reordered;
+		dragIdx = i;
+	}
+	function onDragEnd() {
+		dragIdx = null;
+		saveOrder();
+	}
+
+	async function saveOrder() {
+		const order = images.map(img => img.id).join(',');
+		const fd = new FormData();
+		fd.append('order', order);
+		await fetch('?/reorder_images', { method: 'POST', body: fd });
+	}
 </script>
 
 <svelte:head><title>{data.product.name} — IM Admin</title></svelte:head>
@@ -110,13 +135,34 @@
 		<div class="card" style="margin-top:16px;">
 			<h3 class="section-title">Fotos del producto</h3>
 			<div class="images-grid">
-				{#each data.images as img}
-					<div class="img-item">
-						<img src={img.url} alt={img.alt ?? data.product.name} />
-						<form method="POST" action="?/delete_image" use:enhance>
-							<input type="hidden" name="id" value={img.id} />
-							<button type="submit" class="img-delete" title="Eliminar">×</button>
-						</form>
+				{#each sortedImages as img, i}
+					<div
+						class="img-item"
+						class:dragging={dragIdx === i}
+						draggable="true"
+						ondragstart={() => onDragStart(i)}
+						ondragover={(e) => onDragOver(e, i)}
+						ondragend={onDragEnd}
+						role="listitem"
+					>
+						{#if i === 0}
+							<span class="img-primary-badge">Principal</span>
+						{/if}
+						<img src={img.url} alt={data.product.name} />
+						<div class="img-actions">
+							{#if i !== 0}
+								<button
+									type="button"
+									class="img-action-btn"
+									title="Hacer principal"
+									onclick={() => { const reordered = [...images]; const [moved] = reordered.splice(i,1); reordered.unshift(moved); images = reordered; saveOrder(); }}
+								>★</button>
+							{/if}
+							<form method="POST" action="?/delete_image" use:enhance>
+								<input type="hidden" name="id" value={img.id} />
+								<button type="submit" class="img-delete" title="Eliminar">×</button>
+							</form>
+						</div>
 					</div>
 				{/each}
 
@@ -126,7 +172,10 @@
 					enctype="multipart/form-data"
 					use:enhance={() => {
 						uploading = true;
-						return async ({ update }) => { uploading = false; await update(); };
+						return async ({ update }) => {
+							uploading = false;
+							await update({ reset: false });
+						};
 					}}
 				>
 					<label class="img-upload">
@@ -134,17 +183,17 @@
 							<span style="font-size:12px;color:var(--muted);">Subiendo...</span>
 						{:else}
 							<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-							<span style="font-size:12px;color:var(--muted);margin-top:4px;">Subir foto</span>
-							<span style="font-size:10px;color:var(--muted);">Max 5MB</span>
+							<span style="font-size:12px;color:var(--muted);margin-top:4px;">Subir fotos</span>
+							<span style="font-size:10px;color:var(--muted);">Múltiple · Max 5MB</span>
 						{/if}
 						<input
-							type="file" name="file" accept="image/*" style="display:none;"
+							type="file" name="files" accept="image/*" multiple style="display:none;"
 							onchange={(e) => { if ((e.target as HTMLInputElement).files?.length) (e.target as HTMLInputElement).form?.requestSubmit(); }}
 						/>
 					</label>
 				</form>
 			</div>
-			<p style="font-size:11px;color:var(--muted);margin-top:8px;">Proporción 3:4 recomendada · Max 5MB por foto.</p>
+			<p style="font-size:11px;color:var(--muted);margin-top:8px;">La primera foto es la principal · Proporción 3:4 recomendada · Max 5MB por foto.</p>
 		</div>
 	</div>
 
@@ -197,5 +246,11 @@
 .img-delete { position:absolute; top:-8px; right:-8px; width:22px; height:22px; border-radius:50%; background:var(--danger); color:#fff; border:none; cursor:pointer; font-size:14px; line-height:1; }
 .img-upload { width:100px; height:133px; border:2px dashed var(--border); border-radius:6px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; transition:border-color 0.15s; }
 .img-upload:hover { border-color:var(--navy); }
+.img-item { cursor: grab; }
+.img-item.dragging { opacity:0.4; cursor:grabbing; }
+.img-primary-badge { position:absolute; top:6px; left:6px; background:var(--navy); color:#fff; font-size:9px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; padding:2px 6px; border-radius:3px; z-index:1; }
+.img-actions { position:absolute; bottom:6px; right:6px; display:flex; gap:4px; }
+.img-action-btn { width:22px; height:22px; border-radius:50%; background:rgba(255,255,255,0.9); color:#b45309; border:none; cursor:pointer; font-size:13px; display:flex; align-items:center; justify-content:center; }
+.img-action-btn:hover { background:#fff; }
 @media (max-width:900px) { .form-layout { grid-template-columns:1fr; } .price-grid { grid-template-columns:1fr 1fr; } }
 </style>

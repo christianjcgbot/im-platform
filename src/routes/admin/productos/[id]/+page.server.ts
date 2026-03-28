@@ -64,24 +64,10 @@ export const actions: Actions = {
 
 	upload_image: async ({ request, params, locals }) => {
 		const form = await request.formData();
-		const file = form.get('file') as File;
+		const files = form.getAll('files') as File[];
 
-		if (!file || file.size === 0) return fail(400, { error: 'No se seleccionó archivo.' });
-		if (file.size > 5 * 1024 * 1024) return fail(400, { error: 'La imagen no puede superar 5MB.' });
-
-		const ext = file.name.split('.').pop();
-		const path = `products/${params.id}/${Date.now()}.${ext}`;
-		const buffer = await file.arrayBuffer();
-
-		const { error: uploadErr } = await locals.supabase.storage
-			.from('product-images')
-			.upload(path, buffer, { contentType: file.type, upsert: false });
-
-		if (uploadErr) return fail(500, { error: 'Error al subir imagen.' });
-
-		const { data: { publicUrl } } = locals.supabase.storage
-			.from('product-images')
-			.getPublicUrl(path);
+		const validFiles = files.filter(f => f && f.size > 0);
+		if (validFiles.length === 0) return fail(400, { error: 'No se seleccionó ningún archivo.' });
 
 		const { data: lastImg } = await locals.supabase
 			.from('product_images')
@@ -91,12 +77,41 @@ export const actions: Actions = {
 			.limit(1)
 			.single();
 
-		await locals.supabase.from('product_images').insert({
-			product_id: params.id,
-			url: publicUrl,
-			position: (lastImg?.position ?? -1) + 1
-		});
+		let nextPosition = (lastImg?.position ?? -1) + 1;
 
+		for (const file of validFiles) {
+			if (file.size > 5 * 1024 * 1024) continue; // skip >5MB silently
+
+			const ext = file.name.split('.').pop();
+			const path = `products/${params.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+			const buffer = await file.arrayBuffer();
+
+			const { error: uploadErr } = await locals.supabase.storage
+				.from('product-images')
+				.upload(path, buffer, { contentType: file.type, upsert: false });
+
+			if (uploadErr) continue;
+
+			const { data: { publicUrl } } = locals.supabase.storage
+				.from('product-images')
+				.getPublicUrl(path);
+
+			await locals.supabase.from('product_images').insert({
+				product_id: params.id,
+				url: publicUrl,
+				position: nextPosition++
+			});
+		}
+
+		return { success: true };
+	},
+
+	reorder_images: async ({ request, locals }) => {
+		const form = await request.formData();
+		const order = (form.get('order') as string).split(',').filter(Boolean);
+		for (let i = 0; i < order.length; i++) {
+			await locals.supabase.from('product_images').update({ position: i }).eq('id', order[i]);
+		}
 		return { success: true };
 	},
 
