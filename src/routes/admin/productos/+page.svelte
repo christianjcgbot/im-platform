@@ -48,7 +48,7 @@
 								</div>
 							</div>
 						</td>
-						<td><span class="status-badge status-{p.status}">{p.status}</span></td>
+						<td><span class="status-badge status-{p.status}">{p.status === 'available' ? 'Disponible' : p.status === 'draft' ? 'Borrador' : 'Agotado'}</span></td>
 						<td>{clp(p.price)}</td>
 						<td style="color:{p.totalStock === 0 ? 'var(--danger)' : p.totalStock <= 3 ? 'var(--warning)' : 'inherit'}">{p.totalStock}</td>
 						<td>
