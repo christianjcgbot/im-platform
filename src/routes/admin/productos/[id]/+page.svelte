@@ -27,17 +27,20 @@
 		<a href="/admin/productos" style="font-size:13px;color:var(--muted);">← Productos</a>
 		<h1 style="margin-top:4px;">{data.product.name}</h1>
 	</div>
-	<button form="product-form" type="submit" formaction="?/update" class="btn btn-primary">Guardar cambios</button>
+	<button form="product-form" type="submit" class="btn btn-primary">Guardar cambios</button>
 </div>
 
 {#if form?.error}
 	<div class="error-banner">{form.error}</div>
 {/if}
 
-<form id="product-form" method="POST">
-	<div class="form-layout">
+<div class="form-layout">
 
-		<div class="form-main">
+	<!-- Columna principal -->
+	<div class="form-main">
+
+		<!-- Info básica — dentro del form principal -->
+		<form id="product-form" method="POST" action="?/update">
 			<div class="card">
 				<div class="form-group">
 					<label class="form-label" for="name">Nombre *</label>
@@ -51,51 +54,6 @@
 					<label class="form-label" for="description">Descripción</label>
 					<textarea id="description" name="description" class="form-textarea">{data.product.description ?? ''}</textarea>
 				</div>
-			</div>
-
-			<!-- Fotos -->
-			<div class="card" style="margin-top:16px;">
-				<h3 class="section-title">Fotos del producto</h3>
-
-				<div class="images-grid">
-					{#each data.images as img}
-						<div class="img-item">
-							<img src={img.url} alt={img.alt ?? data.product.name} />
-							<form method="POST" use:enhance>
-								<input type="hidden" name="id" value={img.id} />
-								<button formaction="?/delete_image" type="submit" class="img-delete" title="Eliminar">×</button>
-							</form>
-						</div>
-					{/each}
-
-					<form
-						method="POST"
-						enctype="multipart/form-data"
-						use:enhance={() => {
-							uploading = true;
-							return async ({ update }) => { uploading = false; await update(); };
-						}}
-					>
-						<label class="img-upload">
-							{#if uploading}
-								<span style="font-size:12px;color:var(--muted);">Subiendo...</span>
-							{:else}
-								<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-								<span style="font-size:12px;color:var(--muted);margin-top:4px;">Subir foto</span>
-								<span style="font-size:10px;color:var(--muted);">Max 5MB</span>
-							{/if}
-							<input
-								type="file"
-								name="file"
-								accept="image/*"
-								style="display:none;"
-								onchange={(e) => { if ((e.target as HTMLInputElement).files?.length) (e.target as HTMLInputElement).form?.requestSubmit(); }}
-							/>
-						</label>
-						<button formaction="?/upload_image" type="submit" style="display:none;"></button>
-					</form>
-				</div>
-				<p style="font-size:11px;color:var(--muted);margin-top:8px;">Recomendado: fotos en proporción 3:4, mínimo 800×1067px.</p>
 			</div>
 
 			<!-- Precios -->
@@ -138,6 +96,7 @@
 				{/each}
 			</div>
 
+			<!-- Propiedades -->
 			<div class="card" style="margin-top:16px;">
 				<h3 class="section-title">Propiedades</h3>
 				<div class="form-group" style="margin-bottom:0;">
@@ -145,41 +104,82 @@
 					<input name="sku" type="text" class="form-input" value={data.product.sku ?? ''} />
 				</div>
 			</div>
-		</div>
+		</form>
 
-		<!-- Sidebar -->
-		<div class="form-sidebar">
-			<div class="card">
-				<h3 class="section-title">Estado</h3>
-				<div class="form-group">
-					<label class="form-label">Visibilidad</label>
-					<select name="status" class="form-select">
-						<option value="draft" selected={data.product.status === 'draft'}>Borrador</option>
-						<option value="available" selected={data.product.status === 'available'}>Disponible</option>
-						<option value="sold_out" selected={data.product.status === 'sold_out'}>Agotado</option>
-					</select>
-				</div>
-				<label class="checkbox-label">
-					<input type="checkbox" name="featured" checked={data.product.featured} />
-					<span>Producto destacado</span>
-				</label>
-			</div>
+		<!-- Fotos — forms independientes, fuera del form principal -->
+		<div class="card" style="margin-top:16px;">
+			<h3 class="section-title">Fotos del producto</h3>
+			<div class="images-grid">
+				{#each data.images as img}
+					<div class="img-item">
+						<img src={img.url} alt={img.alt ?? data.product.name} />
+						<form method="POST" action="?/delete_image" use:enhance>
+							<input type="hidden" name="id" value={img.id} />
+							<button type="submit" class="img-delete" title="Eliminar">×</button>
+						</form>
+					</div>
+				{/each}
 
-			<div class="card" style="margin-top:16px;">
-				<h3 class="section-title">Categoría</h3>
-				<select name="category_id" class="form-select">
-					<option value="">Sin categoría</option>
-					{#each data.categories.filter((c: any) => !c.parent_id) as cat}
-						<option value={cat.id} selected={data.product.category_id === cat.id}>{cat.name}</option>
-						{#each data.categories.filter((c: any) => c.parent_id === cat.id) as sub}
-							<option value={sub.id} selected={data.product.category_id === sub.id}>  └ {sub.name}</option>
-						{/each}
-					{/each}
-				</select>
+				<form
+					method="POST"
+					action="?/upload_image"
+					enctype="multipart/form-data"
+					use:enhance={() => {
+						uploading = true;
+						return async ({ update }) => { uploading = false; await update(); };
+					}}
+				>
+					<label class="img-upload">
+						{#if uploading}
+							<span style="font-size:12px;color:var(--muted);">Subiendo...</span>
+						{:else}
+							<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+							<span style="font-size:12px;color:var(--muted);margin-top:4px;">Subir foto</span>
+							<span style="font-size:10px;color:var(--muted);">Max 5MB</span>
+						{/if}
+						<input
+							type="file" name="file" accept="image/*" style="display:none;"
+							onchange={(e) => { if ((e.target as HTMLInputElement).files?.length) (e.target as HTMLInputElement).form?.requestSubmit(); }}
+						/>
+					</label>
+				</form>
 			</div>
+			<p style="font-size:11px;color:var(--muted);margin-top:8px;">Proporción 3:4 recomendada · Max 5MB por foto.</p>
 		</div>
 	</div>
-</form>
+
+	<!-- Sidebar — usa form attribute para asociarse al form principal -->
+	<div class="form-sidebar">
+		<div class="card">
+			<h3 class="section-title">Estado</h3>
+			<div class="form-group">
+				<label class="form-label">Visibilidad</label>
+				<select name="status" form="product-form" class="form-select">
+					<option value="draft" selected={data.product.status === 'draft'}>Borrador</option>
+					<option value="available" selected={data.product.status === 'available'}>Disponible</option>
+					<option value="sold_out" selected={data.product.status === 'sold_out'}>Agotado</option>
+				</select>
+			</div>
+			<label class="checkbox-label">
+				<input type="checkbox" name="featured" form="product-form" checked={data.product.featured} />
+				<span>Producto destacado</span>
+			</label>
+		</div>
+
+		<div class="card" style="margin-top:16px;">
+			<h3 class="section-title">Categoría</h3>
+			<select name="category_id" form="product-form" class="form-select">
+				<option value="">Sin categoría</option>
+				{#each data.categories.filter((c: any) => !c.parent_id) as cat}
+					<option value={cat.id} selected={data.product.category_id === cat.id}>{cat.name}</option>
+					{#each data.categories.filter((c: any) => c.parent_id === cat.id) as sub}
+						<option value={sub.id} selected={data.product.category_id === sub.id}>  └ {sub.name}</option>
+					{/each}
+				{/each}
+			</select>
+		</div>
+	</div>
+</div>
 
 <style>
 .page-header { display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:24px; }
@@ -190,15 +190,12 @@
 .price-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
 .variants-header { display:grid; grid-template-columns:1fr 1fr 100px 32px; gap:8px; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:8px; }
 .variant-row { display:grid; grid-template-columns:1fr 1fr 100px 32px; gap:8px; margin-bottom:8px; align-items:center; }
-.checkbox-label { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
-
-/* Images */
+.checkbox-label { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; margin-top:12px; }
 .images-grid { display:flex; flex-wrap:wrap; gap:12px; }
 .img-item { position:relative; width:100px; height:133px; }
 .img-item img { width:100%; height:100%; object-fit:cover; border-radius:6px; border:1px solid var(--border); }
-.img-delete { position:absolute; top:-8px; right:-8px; width:22px; height:22px; border-radius:50%; background:var(--danger); color:#fff; border:none; cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center; }
+.img-delete { position:absolute; top:-8px; right:-8px; width:22px; height:22px; border-radius:50%; background:var(--danger); color:#fff; border:none; cursor:pointer; font-size:14px; line-height:1; }
 .img-upload { width:100px; height:133px; border:2px dashed var(--border); border-radius:6px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; transition:border-color 0.15s; }
 .img-upload:hover { border-color:var(--navy); }
-
 @media (max-width:900px) { .form-layout { grid-template-columns:1fr; } .price-grid { grid-template-columns:1fr 1fr; } }
 </style>
