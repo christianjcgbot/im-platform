@@ -9,6 +9,11 @@
 	// Root categories only (parent_id = null)
 	let rootCats = $derived(categories.filter(c => !c.parent_id));
 
+	// Subcategories per root cat (for mobile menu expansion)
+	function subCatsOf(parentId: string) {
+		return categories.filter(c => c.parent_id === parentId);
+	}
+
 	onMount(() => {
 		initCart();
 	});
@@ -92,7 +97,15 @@
 			<ul id="site-menu" class="menu-left">
 				<li><a href="/" onclick={() => menuOpen = false}>Todos</a></li>
 				{#each rootCats as cat}
-					<li><a href="/?categoria={cat.slug}" onclick={() => menuOpen = false}>{cat.name}</a></li>
+					<li><a href="/?categoria={cat.slug}" onclick={() => menuOpen = false}>{cat.name}</a>
+						{#if subCatsOf(cat.id).length > 0}
+							<ul class="menu-sub">
+								{#each subCatsOf(cat.id) as sub}
+									<li><a href="/?categoria={sub.slug}" onclick={() => menuOpen = false}>{sub.name}</a></li>
+								{/each}
+							</ul>
+						{/if}
+					</li>
 				{/each}
 			</ul>
 		</nav>
