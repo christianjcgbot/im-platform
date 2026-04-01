@@ -1,13 +1,43 @@
 <script lang="ts">
 	import ShopHeader from '$lib/components/ShopHeader.svelte';
 	import ShopFooter from '$lib/components/ShopFooter.svelte';
+	import { onMount } from 'svelte';
+	import { cart } from '$lib/cart.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	let o      = $derived(data.order);
-	let addr   = $derived(o.shipping_address as Record<string, string> | null);
-	let isPaid = $derived(o.payment_status === 'paid');
+	let o           = $state(data.order);
+	let addr        = $derived(o.shipping_address as Record<string, string> | null);
+	let isPaid      = $derived(o.payment_status === 'paid');
+	let confirming  = $state(false);
+
+	onMount(async () => {
+		// Flujo 3DS: SumUp redirige directamente aquí sin pasar por onResponse del widget
+		// Si el pago sigue pendiente y tenemos checkout_id, confirmamos ahora
+		const checkoutId = (o as Record<string, unknown>).sumup_checkout_id as string | null;
+		if (o.payment_status === 'pending' && checkoutId) {
+			confirming = true;
+			try {
+				const res = await fetch('/api/sumup/confirm', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ checkoutId, orderId: o.id })
+				});
+				const json = await res.json();
+				if (json.ok) {
+					o = { ...o, payment_status: 'paid', status: 'preparing' };
+					cart.clear();
+				}
+			} catch (e) {
+				console.warn('confirm error:', e);
+			} finally {
+				confirming = false;
+			}
+		} else if (o.payment_status === 'paid') {
+			cart.clear();
+		}
+	});
 
 	function clp(n: number) {
 		return '$' + (n ?? 0).toLocaleString('es-CL');
@@ -28,7 +58,15 @@
 		<div class="exito-wrap">
 
 			<!-- Banner de estado de pago -->
-			{#if !isPaid}
+			{#if confirming}
+				<div class="exito-banner exito-banner-pending">
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+					<div>
+						<strong>Verificando pago…</strong>
+						<span>Estamos confirmando tu pago con SumUp, un momento.</span>
+					</div>
+				</div>
+			{:else if !isPaid}
 				<div class="exito-banner exito-banner-pending">
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
 					<div>

@@ -11,7 +11,7 @@ export const load: PageServerLoad = async ({ url }) => {
 
 	const { data: order } = await db
 		.from('orders')
-		.select('id, order_number, customer_name, customer_email, status, payment_status, subtotal, iva, shipping_cost, total, shipping_address, created_at')
+		.select('id, order_number, customer_name, customer_email, status, payment_status, subtotal, iva, shipping_cost, total, shipping_address, created_at, sumup_checkout_id')
 		.eq('id', ref)
 		.single();
 
