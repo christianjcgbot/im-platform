@@ -34,7 +34,7 @@
 			</thead>
 			<tbody>
 				{#each data.products as p}
-					<tr>
+					<tr onclick={() => window.location.href = `/admin/productos/${p.id}`} style="cursor:pointer;">
 						<td>
 							<div style="display:flex;align-items:center;gap:12px;">
 								{#if p.image}
@@ -51,7 +51,7 @@
 						<td><span class="status-badge status-{p.status}">{p.status === 'available' ? 'Disponible' : p.status === 'draft' ? 'Borrador' : 'Agotado'}</span></td>
 						<td>{clp(p.price)}</td>
 						<td style="color:{p.totalStock === 0 ? 'var(--danger)' : p.totalStock <= 3 ? 'var(--warning)' : 'inherit'}">{p.totalStock}</td>
-						<td>
+						<td onclick={(e) => e.stopPropagation()}>
 							<div style="display:flex;gap:8px;">
 								<a href="/admin/productos/{p.id}" class="btn btn-ghost" style="padding:6px 12px;">Editar</a>
 								<form method="POST" action="?/delete" use:enhance>

@@ -1,0 +1,4038 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 36127c3..d69b166 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1,55 +1,372 @@
+ # IM Platform — CLAUDE.md
+ 
++> Referencia técnica completa del proyecto. Leer antes de cualquier cambio.
++
++---
++
+ ## Stack
+-- SvelteKit + TypeScript
+-- Supabase (DB + Auth + Storage)
+-- SumUp Checkout API (widget embebido)
+-- Netlify (deploy)
+ 
+-## Reglas de desarrollo
++| Capa | Tecnología |
++|------|-----------|
++| Framework | SvelteKit + TypeScript (Svelte 5 con runes) |
++| Base de datos | Supabase (PostgreSQL + Auth + Storage + RLS) |
++| Email transaccional | Brevo REST API |
++| Pagos | SumUp Checkout API (pendiente) |
++| Deploy | Netlify (adaptador configurado) |
++| Envío | Blue Express API (pendiente, para cotización de despacho) |
+ 
+-1. **Leer CONSTITUTION.md antes de cualquier cambio arquitectónico**
+-2. **Spec primero** — toda feature nueva requiere spec aprobado en /docs/modules/
+-3. **Probar local antes de mergear** — nunca pushear código no probado a main
+-4. **Alta calidad de código** — el checkout maneja dinero real, sin bugs tolerados
+-5. **TypeScript estricto** — no usar `any`
+-6. **Variables de entorno** — nunca hardcodear keys
++---
+ 
+-## Flujo de trabajo
++## Variables de entorno
+ 
++```env
++PUBLIC_SUPABASE_URL=https://bvcgwolwhxuruibpqjzz.supabase.co
++PUBLIC_SUPABASE_ANON_KEY=<anon_key>
++SUPABASE_SERVICE_KEY=<service_key>
++BREVO_API_KEY=<brevo_api_key>
++STORE_EMAIL=hola@imsportswear.cl
++STORE_NAME=IM Sportswear
++PUBLIC_SITE_URL=http://localhost:5173   # producción: https://imsportswear.cl
++SUMUP_API_KEY=                         # Bearer token del dashboard SumUp
++SUMUP_MERCHANT_CODE=                   # Merchant code del dashboard SumUp
++SUMUP_WEBHOOK_SECRET=                  # Secret para verificar firma HMAC-SHA256
+ ```
+-feature/branch → probar local → PR → review → merge a main → deploy Netlify
++
++---
++
++## Comandos
++
++```bash
++npm run dev      # desarrollo local (http://localhost:5173)
++npm run build    # build producción
++npm run preview  # preview del build
+ ```
+ 
+-## Carpetas clave
++---
++
++## Estructura de rutas
+ 
+ ```
+-src/lib/modules/     ← lógica de cada módulo
+-src/routes/admin/    ← panel administrador
+-src/routes/api/      ← endpoints server-side
+-docs/modules/        ← specs SDD
+-.claude/skills/      ← skills de Claude Code
++src/routes/
++  admin/
++    +layout.server.ts       ← protección de rutas (redirige a /admin/login si no hay sesión)
++    +layout.svelte          ← sidebar nav con enlaces a todos los módulos
++    +page.svelte            ← M1 Dashboard
++    login/                  ← AUTH Login (layout propio @)
++    logout/                 ← AUTH Logout (page.server.ts con redirect)
++    productos/              ← M3 Productos (lista)
++    productos/nuevo/        ← M3 Crear producto
++    productos/[id]/         ← M3 Editar producto
++    categorias/             ← M5 Categorías
++    inventario/             ← M4 Inventario
++    pedidos/                ← M2 Pedidos (lista)
++    pedidos/[id]/           ← M2 Detalle de pedido
++    configuracion/          ← M6 Configuración (settings)
++
++  +page.svelte              ← SHOP Listado de productos
++  +page.server.ts           ← SHOP Queries: categorías, productos, imágenes, variantes
++  productos/[slug]/         ← SHOP PDP (Product Detail Page)
++  checkout/                 ← CHECKOUT Formulario + widget SumUp
++  checkout/exito/           ← CHECKOUT Página de confirmación
++  api/sumup/webhook/        ← CHECKOUT Webhook SumUp (pago confirmado)
++
++src/lib/
++  components/
++    RichTextEditor.svelte   ← Editor Tiptap (Bold, Italic, H2, H3, Bullet, Ordered)
++    ShopHeader.svelte       ← Header shop: nav categorías, logo, carrito drawer
++    ShopFooter.svelte       ← Footer shop: navegación, soporte, social
++  cart.svelte.ts            ← Store del carrito (Svelte 5 runes, persiste en localStorage)
++  server/
++    email.ts                ← sendEmail() + buildOrderEmail() con Brevo REST API
++    supabase.ts             ← createSupabaseServerClient() + createServiceClient()
+ ```
+ 
+-## Variables de entorno necesarias
++---
+ 
+-```env
+-PUBLIC_SUPABASE_URL=
+-PUBLIC_SUPABASE_ANON_KEY=
+-SUPABASE_SERVICE_KEY=
+-SUMUP_API_KEY=
+-SUMUP_MERCHANT_CODE=
+-SUMUP_WEBHOOK_SECRET=
++## Schema de base de datos
++
++### `products`
++| Columna | Tipo | Notas |
++|---------|------|-------|
++| id | uuid PK | |
++| name | text | |
++| subtitle | text | tagline corto |
++| description | text | HTML (rich text) |
++| category_id | uuid FK → categories | nullable |
++| price | integer | CLP sin decimales |
++| compare_price | integer | precio tachado, nullable |
++| cost | integer | costo interno, nullable |
++| sku | text | nullable |
++| status | text | `available` / `draft` / `discontinued` |
++| featured | boolean | destacado en tienda |
++| slug | text | para URL SEO |
++| meta_description | text | max 155 chars |
++| images | jsonb | array de `{ url, path, order }` |
++| created_at | timestamptz | |
++| updated_at | timestamptz | |
++
++### `product_variants`
++| Columna | Tipo | Notas |
++|---------|------|-------|
++| id | uuid PK | |
++| product_id | uuid FK → products | |
++| color | text | |
++| size | text | |
++| stock | integer | unidades disponibles |
++| low_stock_threshold | integer | umbral alerta stock bajo (por variante) |
++| sku | text | nullable |
++| created_at | timestamptz | |
++
++### `categories`
++| Columna | Tipo | Notas |
++|---------|------|-------|
++| id | uuid PK | |
++| name | text | |
++| slug | text | auto-generado desde name |
++| parent_id | uuid FK → categories | nullable (si es subcategoría) |
++| position | integer | orden |
++
++### `settings`
++| Columna | Tipo | Notas |
++|---------|------|-------|
++| key | text PK | `store`, `shipping`, `sizes`, `colors` |
++| value | jsonb | datos de la configuración |
++| updated_at | timestamptz | |
++
++- `store`: `{ name, email, phone, address }`
++- `shipping`: `{ free_threshold, cost, days }`
++- `sizes`: `["XS","S","M","L","XL","XXL","Única"]`
++- `colors`: `[{ name, hex }]`
++
++### `orders`
++| Columna | Tipo | Notas |
++|---------|------|-------|
++| id | uuid PK | también es el `checkout_reference` en SumUp |
++| order_number | integer | auto-increment legible |
++| customer_name | text | |
++| customer_email | text | |
++| customer_phone | text | nullable |
++| status | text | `created` / `preparing` / `shipped` / `delivered` / `cancelled` |
++| payment_status | text | `pending` / `paid` / `failed` / `refunded` |
++| payment_method | text | e.g. `sumup` |
++| sumup_checkout_id | text | ID del checkout en SumUp (para reconciliar webhook) |
++| subtotal | integer | precio sin IVA explícito (IVA ya incluido) |
++| iva | integer | 19% del subtotal (subtotal * 19/119) |
++| shipping_cost | integer | costo envío sin IVA |
++| total | integer | subtotal + shipping_cost |
++| shipping_provider | text | `chilexpress` / `blue_express` / nullable |
++| tracking_id | text | número de seguimiento, nullable |
++| shipping_address | jsonb | `{ street, city, region, zip, country }` |
++| billing_same_as_shipping | boolean | |
++| billing_address | jsonb | igual estructura que shipping_address |
++| notes | text | notas internas, nullable |
++| created_at | timestamptz | |
++| updated_at | timestamptz | |
++
++### `order_items`
++| Columna | Tipo | Notas |
++|---------|------|-------|
++| id | uuid PK | |
++| order_id | uuid FK → orders | |
++| product_id | uuid FK → products | nullable (si producto eliminado) |
++| variant_id | uuid FK → product_variants | nullable |
++| product_name | text | snapshot al momento de la compra |
++| color | text | snapshot |
++| size | text | snapshot |
++| sku | text | snapshot |
++| image_url | text | snapshot |
++| unit_price | integer | precio unitario CLP |
++| quantity | integer | |
++| total | integer | unit_price × quantity |
++| created_at | timestamptz | |
++
++### `order_history`
++| Columna | Tipo | Notas |
++|---------|------|-------|
++| id | uuid PK | |
++| order_id | uuid FK → orders | |
++| status | text | nullable (si es solo comentario) |
++| comment | text | texto del evento |
++| created_at | timestamptz | |
++
++---
++
++## Módulos implementados
++
++### AUTH — Autenticación Admin
++- Login con Supabase Auth (email + password)
++- Sesión server-side via cookies
++- `+layout.server.ts` en `/admin/` redirige a `/admin/login` si no hay sesión
++- Layout propio en login (`+layout@.svelte`) para saltar el layout admin
++- Logout en `/admin/logout/+page.server.ts` con `signOut()` + redirect
++
++### M1 — Dashboard
++- Ruta: `/admin`
++- Stats: productos activos (count), variantes con stock bajo (≤ umbral, > 0)
++- Lista las top 10 variantes con stock bajo con nombre de producto
++
++### M2 — Pedidos
++- **Lista** (`/admin/pedidos`): filtros por estado via `?status=`, tabs con contadores, tabla clickable
++- **Detalle** (`/admin/pedidos/[id]`): layout 2 columnas
++  - Columna principal: items con imagen/color/talla/SKU, desglose de precios, dirección de envío y facturación, historial/timeline
++  - Sidebar: info cliente, cambio de estado, info de pago, gestión de despacho (proveedor + tracking)
++- **Acciones server**: `update_status`, `update_shipping`, `add_comment`
++- Cada cambio de estado inserta en `order_history` y envía email Brevo
++- Tracking link directo desde panel según proveedor
++- IVA chileno: `subtotal * 19 / 119` (IVA ya incluido en precio, no se suma encima)
++
++### M3 — Productos
++- **Lista** (`/admin/productos`): tabla con imagen, nombre, precio, estado, categoría; filas clickables
++- **Nuevo** (`/admin/productos/nuevo`): formulario completo
++- **Editar** (`/admin/productos/[id]`): mismo formulario + imagen management
++- Campos: nombre, subtítulo, descripción (rich text), categoría (con creación inline), precio, precio comparativo, costo, SKU, estado, destacado
++- **Imágenes**: upload a Supabase Storage, reordering drag-like (flechas), delete, lightbox preview al hacer click
++- **Variantes**: tabla con color + talla + stock inicial; agregar/eliminar filas
++- **SEO**: slug (auto-generado desde nombre, editable), meta description (counter 155 chars), Google preview card
++- **Categoría inline**: botón "+" abre modal para crear categoría sin salir del formulario; auto-selecciona la nueva categoría
++
++### M4 — Inventario
++- Ruta: `/admin/inventario`
++- Variantes agrupadas por producto
++- Stats chips: total unidades, sin stock, stock bajo
++- Filtros: Todos / Stock bajo / Sin stock
++- Edición inline: stock + umbral de alerta (configurable por variante)
++- Botón **Guardar** por variante — usa `fetch` directo a `?/update_stock` (no `use:enhance`)
++- Color coding: rojo = sin stock, amarillo = stock bajo (≤ threshold)
++
++### M6 — Configuración
++- Ruta: `/admin/configuracion`
++- 4 secciones con form y acción independientes: datos tienda, envío, tallas, colores
++- Datos guardados en tabla `settings` (key/value jsonb)
++- Tallas: lista drag-like con flechas ↑↓ y add/remove
++- Colores: color picker nativo + nombre, lista con preview del swatch
++
++### M5 — Categorías
++- Ruta: `/admin/categorias`
++- Tabla con categorías padre y sus subcategorías listadas
++- Modal para crear/editar: nombre + selector de categoría padre (filtrado para excluir self)
++- Al eliminar un padre: subcategorías se reasignan a root (`parent_id = null`)
++- Slug auto-generado desde nombre (sin acentos, sin caracteres especiales)
++
++### SHOP — Tienda pública
++- `/` → Listado con filtro por categoría, badge Agotado/Nuevo, color dots, precio
++- `/productos/[slug]` → PDP con galería de imágenes, selector color/talla, stock badge, CTA carrito
++- `ShopHeader`: sticky, nav categorías izquierda, logo centro, ícono carrito derecha con drawer
++- `ShopFooter`: 4 columnas (brand, navegación, soporte, conecta), navy dark
++- `cart.svelte.ts`: store Svelte 5, persiste en localStorage, initCart() en onMount
++
++### CHECKOUT — Flujo de pago
++- `/checkout` → formulario contacto + dirección, resumen del pedido (sticky)
++- Flujo: usuario llena form → server crea orden (pending) + checkout SumUp → cliente monta widget embebido SumUp
++- Widget: `SumUpCard.mount({ checkoutId, onResponse })` — el usuario paga sin salir de la página
++- `onResponse('success')` → `cart.clear()` + redirect a `/checkout/exito?ref=<orderId>`
++- `onResponse('fail')` → mostrar error, volver al formulario
++- `/checkout/exito` → carga orden por UUID, muestra resumen con estado de pago
++- Webhook `/api/sumup/webhook`: verifica HMAC-SHA256, actualiza payment_status, descuenta stock via RPC `decrement_stock`, envía email Brevo
++- Sin SumUp configurado (dev): devMode=true → redirige directo a éxito
++
++---
++
++## Componentes compartidos
++
++### `RichTextEditor.svelte`
++```svelte
++<RichTextEditor name="description" value={product.description} />
+ ```
++- Basado en Tiptap (`@tiptap/core` + `@tiptap/starter-kit`)
++- Toolbar: Bold, Italic, H2, H3, Lista con viñetas, Lista numerada
++- Inicializado en `onMount` (seguro para SSR)
++- `<input type="hidden">` lleva el HTML para el submit del formulario
++- Props: `name: string`, `value?: string`
+ 
+-## Comandos
++### `src/lib/server/email.ts`
++```typescript
++sendEmail(to, toName, subject, html)   // POST a Brevo REST API
++buildOrderEmail(data: OrderEmailData)   // genera { subject, html }
++```
++- Template HTML: header navy (#111827), body blanco, footer con email tienda
++- Colores por estado: created=azul, preparing=amarillo, shipped=violeta, delivered=verde, cancelled=rojo
++- Sección de tracking (solo si `trackingId` está presente)
++- Desglose: subtotal, IVA 19% incluido, envío, total
+ 
+-```bash
+-npm run dev      # desarrollo local
+-npm run build    # build producción
+-npm run preview  # preview del build
++---
++
++## Patrones técnicos importantes
++
++### Svelte 5 runes
++```svelte
++let value = $state(initialValue)
++let derived = $derived(expression)
++let computed = $derived.by(() => {
++  // bloque multi-línea
++  return result;
++})
++```
++- `$derived` toma una expresión, no una función
++- `$derived.by(() => { ... })` para bloques multi-línea
++- Usar `$props()` para props de componentes
++
++### TypeScript en templates Svelte
++- **No usar type assertions (`as Type`) dentro de `{}`** en templates — causa "Unexpected token"
++- Mover lógica con tipos a funciones en el bloque `<script>`
++- Evitar literales con `|` en expresiones template — usar variables `$derived`
++
++### Formularios dentro de tablas
++- `<form>` dentro de `<tr>` es HTML inválido — el browser mueve el form fuera del table
++- Solución: usar `fetch` directo en lugar de formularios en contextos de tabla
++- Para inventario: `saveVariant(v)` construye `FormData` manualmente y hace POST a `?/update_stock`
++
++### `use:enhance` y recarga de datos
++- `use:enhance` con `update()` recarga datos del servidor, sobreescribiendo estado local `$state`
++- Cuando se necesita actualizar sin recargar: usar `fetch` directo o `update({ invalidateAll: false })`
++- Para modales de creación inline (categorías): `use:enhance={handleCreate}` + actualizar array local en callback
++
++### Slugify
++```typescript
++function slugify(text: string) {
++  return text.toLowerCase()
++    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
++    .replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-');
++}
+ ```
+ 
+-## Test Cases
++### IVA Chile
++- Los precios incluyen IVA (19%)
++- IVA extraído = `Math.round(subtotal * 19 / 119)`
++- El envío no lleva IVA adicional
++- `total = subtotal + shipping_cost`
++
++---
++
++## Email transaccional (Brevo)
++
++- **Endpoint**: `POST https://api.brevo.com/v3/smtp/email`
++- **Auth**: header `api-key: <BREVO_API_KEY>`
++- **Sender**: `STORE_NAME <STORE_EMAIL>` (hola@imsportswear.cl)
++- Emails se envían en cada cambio de estado del pedido
++- Si falla el envío, **no bloquea** la operación (try/catch en `update_status`)
++- **Pendiente**: verificar dominio `imsportswear.cl` en Brevo para envíos desde `hola@imsportswear.cl`
++
++---
+ 
+-Cada módulo tiene sus TCs en `/docs/modules/`. Antes de marcar un módulo como completo, todos sus TCs deben pasar manualmente (y eventualmente con Vitest).
++## Módulos pendientes
++
++### Blue Express
++- Integración API para cotización de despacho por comuna (pendiente)
++
++---
++
++## Reglas de desarrollo
++
++1. **Leer CONSTITUTION.md antes de cualquier cambio arquitectónico**
++2. **No over-engineer** — tres líneas claras valen más que una abstracción prematura
++3. **No agregar tecnologías** sin justificación arquitectónica
++4. **El panel puede ser funcional y directo; el shop debe ser impecable visualmente**
++5. **Variables de entorno** — nunca hardcodear keys en el código
++6. **No romper módulos existentes** al agregar nuevos
++
++## Flujo de trabajo
++
++```
++feature/branch → probar local → PR → review → merge a main → deploy Netlify
++```
+diff --git a/CONSTITUTION.md b/CONSTITUTION.md
+index 9321cfb..669a568 100644
+--- a/CONSTITUTION.md
++++ b/CONSTITUTION.md
+@@ -8,6 +8,11 @@
+ 
+ IM Sportswear es una marca chilena de sportswear clásico. "IM" son las iniciales de las dos hijas del fundador. Vendemos calidad, minimalismo y rendimiento. No volumen, no descuentos agresivos, no fast fashion.
+ 
++**Dominios:**
++- Marca / home: `imsportswear.cl`
++- Tienda: `shop.imsportswear.cl`
++- Panel admin: `shop.imsportswear.cl/admin`
++
+ ---
+ 
+ ## El objetivo de este sistema
+@@ -24,41 +29,38 @@ Todo lo demás es secundario a ese flujo.
+ No over-engineer. El sistema correcto no es el más complejo, es el que aguanta el crecimiento sin reescribirse. Tres líneas claras valen más que una abstracción prematura.
+ 
+ ### 2. Un solo stack, sin mezclas innecesarias
+-- **Framework:** SvelteKit (frontend + backend en uno)
+-- **Base de datos:** Supabase (PostgreSQL + Auth + Storage)
+-- **Pagos:** SvelteKit API route → SumUp Checkout API
+-- **Deploy:** Netlify
++- **Framework:** SvelteKit (frontend + backend en uno, Svelte 5 con runes)
++- **Base de datos:** Supabase (PostgreSQL + Auth + Storage + RLS)
++- **Pagos:** SumUp Checkout API (pendiente de integración)
++- **Deploy:** Netlify (adaptador configurado)
++- **Email transaccional:** Brevo REST API
+ - No agregar tecnologías sin justificación arquitectónica.
+ 
+ ### 3. Modular desde el inicio
+-Cada módulo es una pieza independiente con su propio spec, sus propias rutas, su propia lógica. Un módulo no rompe otro. Se pueden agregar o quitar módulos sin tocar el resto.
+-
+-### 4. SDD — Spec primero, código después
+-Antes de implementar cualquier módulo o feature: escribir el spec en `/docs/modules/`. El spec define inputs, outputs, comportamiento esperado, schema de datos. Si no hay spec, no hay código.
++Cada módulo es una pieza independiente con su propio spec, sus propias rutas, su propia lógica. Un módulo no rompe otro.
+ 
+-### 5. El panel es para el operador, el shop es para el cliente
+-Son dos contextos distintos con necesidades distintas. El panel puede ser funcional y directo. El shop debe ser impecable visualmente (ya existe el diseño).
++### 4. El panel es para el operador, el shop es para el cliente
++Son dos contextos distintos. El panel puede ser funcional y directo. El shop debe ser impecable visualmente.
+ 
+ ---
+ 
+-## Módulos MVP (Fase 1)
+-
+-| ID | Nombre | Estado |
+-|----|--------|--------|
+-| M1 | Dashboard | 🔲 pendiente |
+-| M2 | Pedidos | 🔲 pendiente |
+-| M3 | Productos | 🔲 pendiente |
+-| M4 | Inventario | 🔲 pendiente |
+-| M5 | Categorías | 🔲 pendiente |
+-| M6 | Configuración | 🔲 pendiente |
+-| AUTH | Autenticación Admin | 🔲 pendiente |
+-| MEDIA | Subida de fotos | 🔲 pendiente |
+-| SHOP | Shop público | 🔲 pendiente |
+-| CHECKOUT | Carrito + SumUp | 🔲 pendiente |
++## Estado de Módulos
++
++| ID | Nombre | Estado | Notas |
++|----|--------|--------|-------|
++| AUTH | Autenticación Admin | ✅ completo | Supabase Auth, sesión server-side, protección de rutas |
++| M1 | Dashboard | ✅ completo | Stats básicos: productos activos, stock bajo |
++| M2 | Pedidos | ✅ completo | Lista, detalle, estados, tracking, historial, email Brevo |
++| M3 | Productos | ✅ completo | CRUD, variantes, imágenes, rich text, SEO, categoría inline |
++| M4 | Inventario | ✅ completo | Edición inline stock + umbral de alerta por variante |
++| M5 | Categorías | ✅ completo | CRUD con subcategorías, modal inline |
++| M6 | Configuración | 🔲 pendiente | Datos tienda, envío, colores, tallas |
++| SHOP | Shop público | 🔲 pendiente | PDP, listado productos, filtros |
++| CHECKOUT | Carrito + SumUp | 🔲 pendiente | Cart, checkout form, Blue Express API, SumUp pago |
+ 
+ ---
+ 
+-## Módulos Fase 2 (cuando haya volumen)
++## Módulos Fase 2
+ 
+ - Clientes
+ - Estadísticas e Informes
+@@ -68,25 +70,17 @@ Son dos contextos distintos con necesidades distintas. El panel puede ser funcio
+ 
+ ---
+ 
+-## Reglas de desarrollo
+-
+-- **Cada módulo tiene su spec** en `/docs/modules/Mx-nombre.md`
+-- **Cada feature es un PR** con referencia al módulo
+-- **Sin código sin spec aprobado**
+-- **TypeScript estricto** en todo el proyecto
+-- **Variables de entorno** nunca en el código, siempre en `.env`
+-- **Row Level Security en Supabase** — nunca exponer datos sin RLS
+-
+----
+-
+ ## Stack de decisiones tomadas
+ 
+ | Decisión | Alternativa descartada | Razón |
+ |----------|----------------------|-------|
+ | SvelteKit | Next.js | Un solo lenguaje, más liviano, Netlify nativo |
++| Svelte 5 runes | Svelte 4 | Reactividad más predecible, menos magia |
+ | Supabase | PlanetScale + Clerk | Todo en uno: DB + Auth + Storage + RLS |
+ | SumUp Checkout API | Construir formulario propio | PCI/3DS manejado por SumUp |
+ | Netlify | Vercel | Dominio ya configurado, DNS ya propagado |
++| Brevo REST API | SMTP / SendGrid | Gratis hasta 300/día, API simple, sin configuración SMTP |
++| Blue Express API | Precio fijo de envío | API entrega costo real sin IVA por comuna |
+ | Sin CMS externo | Decap CMS | El panel admin es el CMS |
+ 
+ ---
+diff --git a/package-lock.json b/package-lock.json
+index b0f6390..ce6d202 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -9,7 +9,9 @@
+ 			"version": "0.0.1",
+ 			"dependencies": {
+ 				"@supabase/ssr": "^0.9.0",
+-				"@supabase/supabase-js": "^2.100.1"
++				"@supabase/supabase-js": "^2.100.1",
++				"@tiptap/core": "^3.21.0",
++				"@tiptap/starter-kit": "^3.21.0"
+ 			},
+ 			"devDependencies": {
+ 				"@sveltejs/adapter-netlify": "^5.2.4",
+@@ -527,6 +529,12 @@
+ 			"dev": true,
+ 			"license": "MIT"
+ 		},
++		"node_modules/@remirror/core-constants": {
++			"version": "3.0.0",
++			"resolved": "https://registry.npmjs.org/@remirror/core-constants/-/core-constants-3.0.0.tgz",
++			"integrity": "sha512-42aWfPrimMfDKDi4YegyS7x+/0tlzaqwPQCULLanv3DMIlu96KTJR0fM5isWX2UViOqlGnX6YFgqWepcX+XMNg==",
++			"license": "MIT"
++		},
+ 		"node_modules/@rollup/rollup-android-arm-eabi": {
+ 			"version": "4.60.0",
+ 			"resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.60.0.tgz",
+@@ -1147,6 +1155,379 @@
+ 				"vite": "^6.3.0 || ^7.0.0"
+ 			}
+ 		},
++		"node_modules/@tiptap/core": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/core/-/core-3.21.0.tgz",
++			"integrity": "sha512-IfnQiuEeabDSPr1C/zHFTbnvlTf5z0DE/d/xz4C6bkL4ZBDJ3rr99h2qsaV0l8F+kbNswZMlQdM8rxNlMy95fQ==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/pm": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-blockquote": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-blockquote/-/extension-blockquote-3.21.0.tgz",
++			"integrity": "sha512-JDM/RR6rM0dMCZ1UnEf7eqmN6pAdIa2llhN+E24HdTGNJCklMFhLAGE/OT8/1r7M0WWA9GVO7/PTe4EdGh6+lQ==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-bold": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-bold/-/extension-bold-3.21.0.tgz",
++			"integrity": "sha512-iyEJRzG7XTCPlHwEDzUw3HnuYYCfL7lNpcCHmxcpYMrIUA8rv7EUxerIwApT6xY8hQ/07ljuJKgOyPvnJOOzuA==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-bullet-list": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-bullet-list/-/extension-bullet-list-3.21.0.tgz",
++			"integrity": "sha512-PWNF+xwxgOeXYGD88sCQLKL0eBoQqjUnZNALxBjN3Y7x4llalh42rHOp2Nt2t6UbQgqTBtBzU/uFcussTpxreQ==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/extension-list": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-code": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-code/-/extension-code-3.21.0.tgz",
++			"integrity": "sha512-D7wA9jp+4X2r1f3FIoga73s6Rn4rmZY57Jes6a4rK3HY+3yHk1r057pPIZSY8Drfs97jxHQVFdfUYUomLSFYBA==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-code-block": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-code-block/-/extension-code-block-3.21.0.tgz",
++			"integrity": "sha512-zrVOcOzDCjHQ8NJcC+qHmZZKiwnP/NMSb3qVJlSMN8TzuHept1MZCDa2Mbo70O6I0txo456SGuXB9sqV1vHmGg==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0",
++				"@tiptap/pm": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-document": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-document/-/extension-document-3.21.0.tgz",
++			"integrity": "sha512-7oCyzXI9ChvJQUlr23AURdfVar4OIsrYUvqdhEwo3bjcI/Q/j0KJiXfuh6ZzL5eVaINSailH53sZaGg4THQtUg==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-dropcursor": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-dropcursor/-/extension-dropcursor-3.21.0.tgz",
++			"integrity": "sha512-6fsDSVAM2iz7eElvT6iivMrGBGjIP/oPigVZ/SPm6f31phaYhz6TIOEgV/Lr2jaPIOgyK4U0cU4Yd4KUBCmhzQ==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/extensions": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-gapcursor": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-gapcursor/-/extension-gapcursor-3.21.0.tgz",
++			"integrity": "sha512-wGjgAoYBTvPAe9QYMI5px355XcNeMkaUrMY9IHbMqgqdmHcDxqooxM4H6sYVX2CRcHwXy4I8NQAoOhSYrQJDMg==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/extensions": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-hard-break": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-hard-break/-/extension-hard-break-3.21.0.tgz",
++			"integrity": "sha512-6JFVSAOQ1qhQHi9mVcdn2/XO8YIMgYV8zjarzNUzP6Sf2waeE5BLXjlg6rIH/945sY1J+FndTojLru6gQ07a5A==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-heading": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-heading/-/extension-heading-3.21.0.tgz",
++			"integrity": "sha512-ji6VJmoRnDzAHYflEYEZohMHRi77UGLW1o3ua7UhI32iJ9nuYssbPNuzEeE4SvENMQwZRszad5+a+dKAa+NC7g==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-horizontal-rule": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-horizontal-rule/-/extension-horizontal-rule-3.21.0.tgz",
++			"integrity": "sha512-vNBnOfFEY62CoJPGo4nonRM7RiOvhII1vhoO+WFr1GxDqCAfmEFjToflt7JT1UJdo6lMVcD+aaaAgOiuSz5p6g==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0",
++				"@tiptap/pm": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-italic": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-italic/-/extension-italic-3.21.0.tgz",
++			"integrity": "sha512-2I8oPvwyXhRn1k8lbDFIutzvhtLEjoO5mmQCNX4TnT4PdxxaSrK9+ihYg12VeqhUeO7dg1MKiFqws0HVBrwzWg==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-link": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-link/-/extension-link-3.21.0.tgz",
++			"integrity": "sha512-oMU7Yve1sbgBsaFAUc2R0GPf4d3ZPVJeMUFC6b6X9rJIvx/IhEUEn9toQcSBGfp02uWK9NdQyIFYFdWlVXH++w==",
++			"license": "MIT",
++			"dependencies": {
++				"linkifyjs": "^4.3.2"
++			},
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0",
++				"@tiptap/pm": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-list": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-list/-/extension-list-3.21.0.tgz",
++			"integrity": "sha512-KeBlEtLrGce2d3dgL89hmwWEtREuzlW4XY5bYWpKNvCbFqvdSb3n7vkdkw32YclZmMWxAcABgW6ucCStkE0rsQ==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0",
++				"@tiptap/pm": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-list-item": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-list-item/-/extension-list-item-3.21.0.tgz",
++			"integrity": "sha512-1ZymZmlQVbAoC4q5x3cro0v5+3I6l+BHqbhIMQLjQFlAOJfcE0pvqRzAFW7PduxUj41tXEtsYqp2NREvO9F5Fg==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/extension-list": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-list-keymap": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-list-keymap/-/extension-list-keymap-3.21.0.tgz",
++			"integrity": "sha512-EzrfW3ASNFPWKhR8sNOq7Kqw4hvaTAOn4dlI7chB8HIANSrlyPOUn+eKAnO6HQgsUgsbjg2GbTUrGrxcoLykUg==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/extension-list": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-ordered-list": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-ordered-list/-/extension-ordered-list-3.21.0.tgz",
++			"integrity": "sha512-+d+0orokMfqaBfvr9tUBgGvo2ZCV+fR3JzsJTmnLBWOkhBSJN7H4pnfXPTue0qwspUwRmkLJxdIlU+J7HkMrng==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/extension-list": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-paragraph": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-paragraph/-/extension-paragraph-3.21.0.tgz",
++			"integrity": "sha512-cMPG/jCoZ9NmLZ5ctFziILaxJGfDtMTb5OLBhifMFZeMVwF1pEJIygDEfnX/HSruv507weZSQG4pERO2tRszMg==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-strike": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-strike/-/extension-strike-3.21.0.tgz",
++			"integrity": "sha512-easnVaN11Wl+5fOtfvzJ10J762S9TRXZaMj5rLBGavgf82DCYHqhGhBqpLQrJ41r4nPABGlYvTRoxfvBLB74Lg==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-text": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-text/-/extension-text-3.21.0.tgz",
++			"integrity": "sha512-Zx8QdB8a5iBuE4uO21c3BjmpBfaJEr2Jd1QFnsdgx11fm6P7dGgZaGko1FaINhfOPRGTN6O/kiF02cDMdOHa/w==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extension-underline": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extension-underline/-/extension-underline-3.21.0.tgz",
++			"integrity": "sha512-gGmBEymbWnr8AIS8bI/bPw5rcwo7wAFcBw/TsLd1nAanu1dDqSRNDBrit3m02Ru+D88u2SfNvmbOPI1pz+1f5w==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/extensions": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/extensions/-/extensions-3.21.0.tgz",
++			"integrity": "sha512-MN1uh5PmHT1F2BNsbc21MIS0AMFFA73oODlp/4ckpBR4o5AxRwV+8f43Cd52UL4MgMkKj/A+QfZ7iK9IDb0h5A==",
++			"license": "MIT",
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			},
++			"peerDependencies": {
++				"@tiptap/core": "^3.21.0",
++				"@tiptap/pm": "^3.21.0"
++			}
++		},
++		"node_modules/@tiptap/pm": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/pm/-/pm-3.21.0.tgz",
++			"integrity": "sha512-I3sNo7oMMsR6FFz1ecvPb9uCF0VQuS2WV67j8Io2M7DJicRWCE/GM5DaiYjTeWBbnByk6BuG0txoJATAqPVliQ==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-changeset": "^2.3.0",
++				"prosemirror-collab": "^1.3.1",
++				"prosemirror-commands": "^1.6.2",
++				"prosemirror-dropcursor": "^1.8.1",
++				"prosemirror-gapcursor": "^1.3.2",
++				"prosemirror-history": "^1.4.1",
++				"prosemirror-inputrules": "^1.4.0",
++				"prosemirror-keymap": "^1.2.2",
++				"prosemirror-markdown": "^1.13.1",
++				"prosemirror-menu": "^1.2.4",
++				"prosemirror-model": "^1.24.1",
++				"prosemirror-schema-basic": "^1.2.3",
++				"prosemirror-schema-list": "^1.5.0",
++				"prosemirror-state": "^1.4.3",
++				"prosemirror-tables": "^1.6.4",
++				"prosemirror-trailing-node": "^3.0.0",
++				"prosemirror-transform": "^1.10.2",
++				"prosemirror-view": "^1.38.1"
++			},
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			}
++		},
++		"node_modules/@tiptap/starter-kit": {
++			"version": "3.21.0",
++			"resolved": "https://registry.npmjs.org/@tiptap/starter-kit/-/starter-kit-3.21.0.tgz",
++			"integrity": "sha512-w7fWxglDtqXFBgRYH+LforJyUboSAQllnWQbGVSTyX4rsICqZjkb3f6CTSUWpGoGKmlmbb2ZpEuoik7tur9d8Q==",
++			"license": "MIT",
++			"dependencies": {
++				"@tiptap/core": "^3.21.0",
++				"@tiptap/extension-blockquote": "^3.21.0",
++				"@tiptap/extension-bold": "^3.21.0",
++				"@tiptap/extension-bullet-list": "^3.21.0",
++				"@tiptap/extension-code": "^3.21.0",
++				"@tiptap/extension-code-block": "^3.21.0",
++				"@tiptap/extension-document": "^3.21.0",
++				"@tiptap/extension-dropcursor": "^3.21.0",
++				"@tiptap/extension-gapcursor": "^3.21.0",
++				"@tiptap/extension-hard-break": "^3.21.0",
++				"@tiptap/extension-heading": "^3.21.0",
++				"@tiptap/extension-horizontal-rule": "^3.21.0",
++				"@tiptap/extension-italic": "^3.21.0",
++				"@tiptap/extension-link": "^3.21.0",
++				"@tiptap/extension-list": "^3.21.0",
++				"@tiptap/extension-list-item": "^3.21.0",
++				"@tiptap/extension-list-keymap": "^3.21.0",
++				"@tiptap/extension-ordered-list": "^3.21.0",
++				"@tiptap/extension-paragraph": "^3.21.0",
++				"@tiptap/extension-strike": "^3.21.0",
++				"@tiptap/extension-text": "^3.21.0",
++				"@tiptap/extension-underline": "^3.21.0",
++				"@tiptap/extensions": "^3.21.0",
++				"@tiptap/pm": "^3.21.0"
++			},
++			"funding": {
++				"type": "github",
++				"url": "https://github.com/sponsors/ueberdosis"
++			}
++		},
+ 		"node_modules/@types/cookie": {
+ 			"version": "0.6.0",
+ 			"resolved": "https://registry.npmjs.org/@types/cookie/-/cookie-0.6.0.tgz",
+@@ -1161,6 +1542,28 @@
+ 			"dev": true,
+ 			"license": "MIT"
+ 		},
++		"node_modules/@types/linkify-it": {
++			"version": "5.0.0",
++			"resolved": "https://registry.npmjs.org/@types/linkify-it/-/linkify-it-5.0.0.tgz",
++			"integrity": "sha512-sVDA58zAw4eWAffKOaQH5/5j3XeayukzDk+ewSsnv3p4yJEZHCCzMDiZM8e0OUrRvmpGZ85jf4yDHkHsgBNr9Q==",
++			"license": "MIT"
++		},
++		"node_modules/@types/markdown-it": {
++			"version": "14.1.2",
++			"resolved": "https://registry.npmjs.org/@types/markdown-it/-/markdown-it-14.1.2.tgz",
++			"integrity": "sha512-promo4eFwuiW+TfGxhi+0x3czqTYJkG8qB17ZUJiVF10Xm7NLVRSLUsfRTU/6h1e24VvRnXCx+hG7li58lkzog==",
++			"license": "MIT",
++			"dependencies": {
++				"@types/linkify-it": "^5",
++				"@types/mdurl": "^2"
++			}
++		},
++		"node_modules/@types/mdurl": {
++			"version": "2.0.0",
++			"resolved": "https://registry.npmjs.org/@types/mdurl/-/mdurl-2.0.0.tgz",
++			"integrity": "sha512-RGdgjQUZba5p6QEFAVx2OGb8rQDL/cPRG7GiedRzMcJ1tYnUANBncjbSB1NRGwbvjcPeikRABz2nshyPk1bhWg==",
++			"license": "MIT"
++		},
+ 		"node_modules/@types/node": {
+ 			"version": "25.5.0",
+ 			"resolved": "https://registry.npmjs.org/@types/node/-/node-25.5.0.tgz",
+@@ -1213,6 +1616,12 @@
+ 				"node": ">=0.4.0"
+ 			}
+ 		},
++		"node_modules/argparse": {
++			"version": "2.0.1",
++			"resolved": "https://registry.npmjs.org/argparse/-/argparse-2.0.1.tgz",
++			"integrity": "sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==",
++			"license": "Python-2.0"
++		},
+ 		"node_modules/aria-query": {
+ 			"version": "5.3.1",
+ 			"resolved": "https://registry.npmjs.org/aria-query/-/aria-query-5.3.1.tgz",
+@@ -1269,6 +1678,12 @@
+ 				"node": ">= 0.6"
+ 			}
+ 		},
++		"node_modules/crelt": {
++			"version": "1.0.6",
++			"resolved": "https://registry.npmjs.org/crelt/-/crelt-1.0.6.tgz",
++			"integrity": "sha512-VQ2MBenTq1fWZUH9DJNGti7kKv6EeAuYr3cLwxUWhIu1baTaXh4Ib5W2CqHVqib4/MqbYGJqiL3Zb8GJZr3l4g==",
++			"license": "MIT"
++		},
+ 		"node_modules/deepmerge": {
+ 			"version": "4.3.1",
+ 			"resolved": "https://registry.npmjs.org/deepmerge/-/deepmerge-4.3.1.tgz",
+@@ -1286,6 +1701,18 @@
+ 			"dev": true,
+ 			"license": "MIT"
+ 		},
++		"node_modules/entities": {
++			"version": "4.5.0",
++			"resolved": "https://registry.npmjs.org/entities/-/entities-4.5.0.tgz",
++			"integrity": "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw==",
++			"license": "BSD-2-Clause",
++			"engines": {
++				"node": ">=0.12"
++			},
++			"funding": {
++				"url": "https://github.com/fb55/entities?sponsor=1"
++			}
++		},
+ 		"node_modules/esbuild": {
+ 			"version": "0.25.12",
+ 			"resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.25.12.tgz",
+@@ -1328,6 +1755,18 @@
+ 				"@esbuild/win32-x64": "0.25.12"
+ 			}
+ 		},
++		"node_modules/escape-string-regexp": {
++			"version": "4.0.0",
++			"resolved": "https://registry.npmjs.org/escape-string-regexp/-/escape-string-regexp-4.0.0.tgz",
++			"integrity": "sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA==",
++			"license": "MIT",
++			"engines": {
++				"node": ">=10"
++			},
++			"funding": {
++				"url": "https://github.com/sponsors/sindresorhus"
++			}
++		},
+ 		"node_modules/esm-env": {
+ 			"version": "1.2.2",
+ 			"resolved": "https://registry.npmjs.org/esm-env/-/esm-env-1.2.2.tgz",
+@@ -1408,6 +1847,21 @@
+ 				"node": ">=6"
+ 			}
+ 		},
++		"node_modules/linkify-it": {
++			"version": "5.0.0",
++			"resolved": "https://registry.npmjs.org/linkify-it/-/linkify-it-5.0.0.tgz",
++			"integrity": "sha512-5aHCbzQRADcdP+ATqnDuhhJ/MRIqDkZX5pyjFHRRysS8vZ5AbqGEoFIb6pYHPZ+L/OC2Lc+xT8uHVVR5CAK/wQ==",
++			"license": "MIT",
++			"dependencies": {
++				"uc.micro": "^2.0.0"
++			}
++		},
++		"node_modules/linkifyjs": {
++			"version": "4.3.2",
++			"resolved": "https://registry.npmjs.org/linkifyjs/-/linkifyjs-4.3.2.tgz",
++			"integrity": "sha512-NT1CJtq3hHIreOianA8aSXn6Cw0JzYOuDQbOrSPe7gqFnCpKP++MQe3ODgO3oh2GJFORkAAdqredOa60z63GbA==",
++			"license": "MIT"
++		},
+ 		"node_modules/locate-character": {
+ 			"version": "3.0.0",
+ 			"resolved": "https://registry.npmjs.org/locate-character/-/locate-character-3.0.0.tgz",
+@@ -1425,6 +1879,29 @@
+ 				"@jridgewell/sourcemap-codec": "^1.5.5"
+ 			}
+ 		},
++		"node_modules/markdown-it": {
++			"version": "14.1.1",
++			"resolved": "https://registry.npmjs.org/markdown-it/-/markdown-it-14.1.1.tgz",
++			"integrity": "sha512-BuU2qnTti9YKgK5N+IeMubp14ZUKUUw7yeJbkjtosvHiP0AZ5c8IAgEMk79D0eC8F23r4Ac/q8cAIFdm2FtyoA==",
++			"license": "MIT",
++			"dependencies": {
++				"argparse": "^2.0.1",
++				"entities": "^4.4.0",
++				"linkify-it": "^5.0.0",
++				"mdurl": "^2.0.0",
++				"punycode.js": "^2.3.1",
++				"uc.micro": "^2.1.0"
++			},
++			"bin": {
++				"markdown-it": "bin/markdown-it.mjs"
++			}
++		},
++		"node_modules/mdurl": {
++			"version": "2.0.0",
++			"resolved": "https://registry.npmjs.org/mdurl/-/mdurl-2.0.0.tgz",
++			"integrity": "sha512-Lf+9+2r+Tdp5wXDXC4PcIBjTDtq4UKjCPMQhKIuzpJNW0b96kVqSwW0bT7FhRSfmAiFYgP+SCRvdrDozfh0U5w==",
++			"license": "MIT"
++		},
+ 		"node_modules/mri": {
+ 			"version": "1.2.0",
+ 			"resolved": "https://registry.npmjs.org/mri/-/mri-1.2.0.tgz",
+@@ -1475,6 +1952,12 @@
+ 			],
+ 			"license": "MIT"
+ 		},
++		"node_modules/orderedmap": {
++			"version": "2.1.1",
++			"resolved": "https://registry.npmjs.org/orderedmap/-/orderedmap-2.1.1.tgz",
++			"integrity": "sha512-TvAWxi0nDe1j/rtMcWcIj94+Ffe6n7zhow33h40SKxmsmozs6dz/e+EajymfoFcHd7sxNn8yHM8839uixMOV6g==",
++			"license": "MIT"
++		},
+ 		"node_modules/picocolors": {
+ 			"version": "1.1.1",
+ 			"resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+@@ -1524,6 +2007,210 @@
+ 				"node": "^10 || ^12 || >=14"
+ 			}
+ 		},
++		"node_modules/prosemirror-changeset": {
++			"version": "2.4.0",
++			"resolved": "https://registry.npmjs.org/prosemirror-changeset/-/prosemirror-changeset-2.4.0.tgz",
++			"integrity": "sha512-LvqH2v7Q2SF6yxatuPP2e8vSUKS/L+xAU7dPDC4RMyHMhZoGDfBC74mYuyYF4gLqOEG758wajtyhNnsTkuhvng==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-transform": "^1.0.0"
++			}
++		},
++		"node_modules/prosemirror-collab": {
++			"version": "1.3.1",
++			"resolved": "https://registry.npmjs.org/prosemirror-collab/-/prosemirror-collab-1.3.1.tgz",
++			"integrity": "sha512-4SnynYR9TTYaQVXd/ieUvsVV4PDMBzrq2xPUWutHivDuOshZXqQ5rGbZM84HEaXKbLdItse7weMGOUdDVcLKEQ==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-state": "^1.0.0"
++			}
++		},
++		"node_modules/prosemirror-commands": {
++			"version": "1.7.1",
++			"resolved": "https://registry.npmjs.org/prosemirror-commands/-/prosemirror-commands-1.7.1.tgz",
++			"integrity": "sha512-rT7qZnQtx5c0/y/KlYaGvtG411S97UaL6gdp6RIZ23DLHanMYLyfGBV5DtSnZdthQql7W+lEVbpSfwtO8T+L2w==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-model": "^1.0.0",
++				"prosemirror-state": "^1.0.0",
++				"prosemirror-transform": "^1.10.2"
++			}
++		},
++		"node_modules/prosemirror-dropcursor": {
++			"version": "1.8.2",
++			"resolved": "https://registry.npmjs.org/prosemirror-dropcursor/-/prosemirror-dropcursor-1.8.2.tgz",
++			"integrity": "sha512-CCk6Gyx9+Tt2sbYk5NK0nB1ukHi2ryaRgadV/LvyNuO3ena1payM2z6Cg0vO1ebK8cxbzo41ku2DE5Axj1Zuiw==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-state": "^1.0.0",
++				"prosemirror-transform": "^1.1.0",
++				"prosemirror-view": "^1.1.0"
++			}
++		},
++		"node_modules/prosemirror-gapcursor": {
++			"version": "1.4.1",
++			"resolved": "https://registry.npmjs.org/prosemirror-gapcursor/-/prosemirror-gapcursor-1.4.1.tgz",
++			"integrity": "sha512-pMdYaEnjNMSwl11yjEGtgTmLkR08m/Vl+Jj443167p9eB3HVQKhYCc4gmHVDsLPODfZfjr/MmirsdyZziXbQKw==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-keymap": "^1.0.0",
++				"prosemirror-model": "^1.0.0",
++				"prosemirror-state": "^1.0.0",
++				"prosemirror-view": "^1.0.0"
++			}
++		},
++		"node_modules/prosemirror-history": {
++			"version": "1.5.0",
++			"resolved": "https://registry.npmjs.org/prosemirror-history/-/prosemirror-history-1.5.0.tgz",
++			"integrity": "sha512-zlzTiH01eKA55UAf1MEjtssJeHnGxO0j4K4Dpx+gnmX9n+SHNlDqI2oO1Kv1iPN5B1dm5fsljCfqKF9nFL6HRg==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-state": "^1.2.2",
++				"prosemirror-transform": "^1.0.0",
++				"prosemirror-view": "^1.31.0",
++				"rope-sequence": "^1.3.0"
++			}
++		},
++		"node_modules/prosemirror-inputrules": {
++			"version": "1.5.1",
++			"resolved": "https://registry.npmjs.org/prosemirror-inputrules/-/prosemirror-inputrules-1.5.1.tgz",
++			"integrity": "sha512-7wj4uMjKaXWAQ1CDgxNzNtR9AlsuwzHfdFH1ygEHA2KHF2DOEaXl1CJfNPAKCg9qNEh4rum975QLaCiQPyY6Fw==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-state": "^1.0.0",
++				"prosemirror-transform": "^1.0.0"
++			}
++		},
++		"node_modules/prosemirror-keymap": {
++			"version": "1.2.3",
++			"resolved": "https://registry.npmjs.org/prosemirror-keymap/-/prosemirror-keymap-1.2.3.tgz",
++			"integrity": "sha512-4HucRlpiLd1IPQQXNqeo81BGtkY8Ai5smHhKW9jjPKRc2wQIxksg7Hl1tTI2IfT2B/LgX6bfYvXxEpJl7aKYKw==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-state": "^1.0.0",
++				"w3c-keyname": "^2.2.0"
++			}
++		},
++		"node_modules/prosemirror-markdown": {
++			"version": "1.13.4",
++			"resolved": "https://registry.npmjs.org/prosemirror-markdown/-/prosemirror-markdown-1.13.4.tgz",
++			"integrity": "sha512-D98dm4cQ3Hs6EmjK500TdAOew4Z03EV71ajEFiWra3Upr7diytJsjF4mPV2dW+eK5uNectiRj0xFxYI9NLXDbw==",
++			"license": "MIT",
++			"dependencies": {
++				"@types/markdown-it": "^14.0.0",
++				"markdown-it": "^14.0.0",
++				"prosemirror-model": "^1.25.0"
++			}
++		},
++		"node_modules/prosemirror-menu": {
++			"version": "1.3.0",
++			"resolved": "https://registry.npmjs.org/prosemirror-menu/-/prosemirror-menu-1.3.0.tgz",
++			"integrity": "sha512-TImyPXCHPcDsSka2/lwJ6WjTASr4re/qWq1yoTTuLOqfXucwF6VcRa2LWCkM/EyTD1UO3CUwiH8qURJoWJRxwg==",
++			"license": "MIT",
++			"dependencies": {
++				"crelt": "^1.0.0",
++				"prosemirror-commands": "^1.0.0",
++				"prosemirror-history": "^1.0.0",
++				"prosemirror-state": "^1.0.0"
++			}
++		},
++		"node_modules/prosemirror-model": {
++			"version": "1.25.4",
++			"resolved": "https://registry.npmjs.org/prosemirror-model/-/prosemirror-model-1.25.4.tgz",
++			"integrity": "sha512-PIM7E43PBxKce8OQeezAs9j4TP+5yDpZVbuurd1h5phUxEKIu+G2a+EUZzIC5nS1mJktDJWzbqS23n1tsAf5QA==",
++			"license": "MIT",
++			"dependencies": {
++				"orderedmap": "^2.0.0"
++			}
++		},
++		"node_modules/prosemirror-schema-basic": {
++			"version": "1.2.4",
++			"resolved": "https://registry.npmjs.org/prosemirror-schema-basic/-/prosemirror-schema-basic-1.2.4.tgz",
++			"integrity": "sha512-ELxP4TlX3yr2v5rM7Sb70SqStq5NvI15c0j9j/gjsrO5vaw+fnnpovCLEGIcpeGfifkuqJwl4fon6b+KdrODYQ==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-model": "^1.25.0"
++			}
++		},
++		"node_modules/prosemirror-schema-list": {
++			"version": "1.5.1",
++			"resolved": "https://registry.npmjs.org/prosemirror-schema-list/-/prosemirror-schema-list-1.5.1.tgz",
++			"integrity": "sha512-927lFx/uwyQaGwJxLWCZRkjXG0p48KpMj6ueoYiu4JX05GGuGcgzAy62dfiV8eFZftgyBUvLx76RsMe20fJl+Q==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-model": "^1.0.0",
++				"prosemirror-state": "^1.0.0",
++				"prosemirror-transform": "^1.7.3"
++			}
++		},
++		"node_modules/prosemirror-state": {
++			"version": "1.4.4",
++			"resolved": "https://registry.npmjs.org/prosemirror-state/-/prosemirror-state-1.4.4.tgz",
++			"integrity": "sha512-6jiYHH2CIGbCfnxdHbXZ12gySFY/fz/ulZE333G6bPqIZ4F+TXo9ifiR86nAHpWnfoNjOb3o5ESi7J8Uz1jXHw==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-model": "^1.0.0",
++				"prosemirror-transform": "^1.0.0",
++				"prosemirror-view": "^1.27.0"
++			}
++		},
++		"node_modules/prosemirror-tables": {
++			"version": "1.8.5",
++			"resolved": "https://registry.npmjs.org/prosemirror-tables/-/prosemirror-tables-1.8.5.tgz",
++			"integrity": "sha512-V/0cDCsHKHe/tfWkeCmthNUcEp1IVO3p6vwN8XtwE9PZQLAZJigbw3QoraAdfJPir4NKJtNvOB8oYGKRl+t0Dw==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-keymap": "^1.2.3",
++				"prosemirror-model": "^1.25.4",
++				"prosemirror-state": "^1.4.4",
++				"prosemirror-transform": "^1.10.5",
++				"prosemirror-view": "^1.41.4"
++			}
++		},
++		"node_modules/prosemirror-trailing-node": {
++			"version": "3.0.0",
++			"resolved": "https://registry.npmjs.org/prosemirror-trailing-node/-/prosemirror-trailing-node-3.0.0.tgz",
++			"integrity": "sha512-xiun5/3q0w5eRnGYfNlW1uU9W6x5MoFKWwq/0TIRgt09lv7Hcser2QYV8t4muXbEr+Fwo0geYn79Xs4GKywrRQ==",
++			"license": "MIT",
++			"dependencies": {
++				"@remirror/core-constants": "3.0.0",
++				"escape-string-regexp": "^4.0.0"
++			},
++			"peerDependencies": {
++				"prosemirror-model": "^1.22.1",
++				"prosemirror-state": "^1.4.2",
++				"prosemirror-view": "^1.33.8"
++			}
++		},
++		"node_modules/prosemirror-transform": {
++			"version": "1.11.0",
++			"resolved": "https://registry.npmjs.org/prosemirror-transform/-/prosemirror-transform-1.11.0.tgz",
++			"integrity": "sha512-4I7Ce4KpygXb9bkiPS3hTEk4dSHorfRw8uI0pE8IhxlK2GXsqv5tIA7JUSxtSu7u8APVOTtbUBxTmnHIxVkIJw==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-model": "^1.21.0"
++			}
++		},
++		"node_modules/prosemirror-view": {
++			"version": "1.41.7",
++			"resolved": "https://registry.npmjs.org/prosemirror-view/-/prosemirror-view-1.41.7.tgz",
++			"integrity": "sha512-jUwKNCEIGiqdvhlS91/2QAg21e4dfU5bH2iwmSDQeosXJgKF7smG0YSplOWK0cjSNgIqXe7VXqo7EIfUFJdt3w==",
++			"license": "MIT",
++			"dependencies": {
++				"prosemirror-model": "^1.20.0",
++				"prosemirror-state": "^1.0.0",
++				"prosemirror-transform": "^1.1.0"
++			}
++		},
++		"node_modules/punycode.js": {
++			"version": "2.3.1",
++			"resolved": "https://registry.npmjs.org/punycode.js/-/punycode.js-2.3.1.tgz",
++			"integrity": "sha512-uxFIHU0YlHYhDQtV4R9J6a52SLx28BCjT+4ieh7IGbgwVJWO+km431c4yRlREUAsAmt/uMjQUyQHNEPf0M39CA==",
++			"license": "MIT",
++			"engines": {
++				"node": ">=6"
++			}
++		},
+ 		"node_modules/readdirp": {
+ 			"version": "4.1.2",
+ 			"resolved": "https://registry.npmjs.org/readdirp/-/readdirp-4.1.2.tgz",
+@@ -1583,6 +2270,12 @@
+ 				"fsevents": "~2.3.2"
+ 			}
+ 		},
++		"node_modules/rope-sequence": {
++			"version": "1.3.4",
++			"resolved": "https://registry.npmjs.org/rope-sequence/-/rope-sequence-1.3.4.tgz",
++			"integrity": "sha512-UT5EDe2cu2E/6O4igUr5PSFs23nvvukicWHx6GnOPlHAiiYbzNuCRQCuiUdHJQcqKalLKlrYJnjY0ySGsXNQXQ==",
++			"license": "MIT"
++		},
+ 		"node_modules/sade": {
+ 			"version": "1.8.1",
+ 			"resolved": "https://registry.npmjs.org/sade/-/sade-1.8.1.tgz",
+@@ -1727,6 +2420,12 @@
+ 				"node": ">=14.17"
+ 			}
+ 		},
++		"node_modules/uc.micro": {
++			"version": "2.1.0",
++			"resolved": "https://registry.npmjs.org/uc.micro/-/uc.micro-2.1.0.tgz",
++			"integrity": "sha512-ARDJmphmdvUk6Glw7y9DQ2bFkKBHwQHLi2lsaH6PPmz/Ka9sFOBsBluozhDltWmnv9u/cF6Rt87znRTPV+yp/A==",
++			"license": "MIT"
++		},
+ 		"node_modules/undici-types": {
+ 			"version": "7.18.2",
+ 			"resolved": "https://registry.npmjs.org/undici-types/-/undici-types-7.18.2.tgz",
+@@ -2312,6 +3011,12 @@
+ 				}
+ 			}
+ 		},
++		"node_modules/w3c-keyname": {
++			"version": "2.2.8",
++			"resolved": "https://registry.npmjs.org/w3c-keyname/-/w3c-keyname-2.2.8.tgz",
++			"integrity": "sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ==",
++			"license": "MIT"
++		},
+ 		"node_modules/ws": {
+ 			"version": "8.20.0",
+ 			"resolved": "https://registry.npmjs.org/ws/-/ws-8.20.0.tgz",
+diff --git a/package.json b/package.json
+index 31576e7..e3db5e6 100644
+--- a/package.json
++++ b/package.json
+@@ -22,6 +22,8 @@
+ 	},
+ 	"dependencies": {
+ 		"@supabase/ssr": "^0.9.0",
+-		"@supabase/supabase-js": "^2.100.1"
++		"@supabase/supabase-js": "^2.100.1",
++		"@tiptap/core": "^3.21.0",
++		"@tiptap/starter-kit": "^3.21.0"
+ 	}
+ }
+diff --git a/src/app.css b/src/app.css
+index 8dd3752..43e7b38 100644
+--- a/src/app.css
++++ b/src/app.css
+@@ -1,25 +1,48 @@
+-/* IM Platform — Global Admin Styles */
++/* IM Platform — Global Styles */
++
+ *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+ 
+ :root {
+-  --sidebar-bg: #111827;
+-  --sidebar-hover: #1f2937;
+-  --sidebar-active: #1f2937;
+-  --sidebar-text: #9ca3af;
+-  --sidebar-text-active: #f9fafb;
+-  --sidebar-width: 240px;
+-  --navy: #18293d;
+-  --navy-deep: #101d2c;
+-  --accent: #2563eb;
+-  --danger: #dc2626;
+-  --warning: #d97706;
+-  --success: #16a34a;
+-  --border: #e5e7eb;
+-  --bg: #f9fafb;
+-  --surface: #ffffff;
+-  --text: #111827;
+-  --muted: #6b7280;
+-  --font: 'Inter', system-ui, sans-serif;
++  /* Sidebar */
++  --sidebar-bg:          #0f172a;
++  --sidebar-hover:       rgba(255,255,255,0.07);
++  --sidebar-active:      rgba(255,255,255,0.12);
++  --sidebar-text:        #94a3b8;
++  --sidebar-text-active: #f1f5f9;
++  --sidebar-border:      rgba(255,255,255,0.06);
++  --sidebar-width:       240px;
++
++  /* Brand */
++  --navy:       #0f172a;
++  --navy-mid:   #1e293b;
++  --accent:     #3b82f6;
++  --accent-hover: #2563eb;
++
++  /* Semantic */
++  --danger:     #ef4444;
++  --warning:    #f59e0b;
++  --success:    #22c55e;
++  --info:       #3b82f6;
++
++  /* UI */
++  --border:     #e2e8f0;
++  --border-strong: #cbd5e1;
++  --bg:         #f8fafc;
++  --bg-subtle:  #f1f5f9;
++  --surface:    #ffffff;
++  --text:       #0f172a;
++  --text-secondary: #475569;
++  --muted:      #94a3b8;
++
++  /* Tokens */
++  --radius-sm:  6px;
++  --radius:     10px;
++  --radius-lg:  14px;
++  --shadow-sm:  0 1px 2px 0 rgb(0 0 0 / 0.05);
++  --shadow:     0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.06);
++  --shadow-md:  0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.05);
++
++  --font: 'Inter', system-ui, -apple-system, sans-serif;
+ }
+ 
+ body {
+@@ -28,78 +51,152 @@ body {
+   background: var(--bg);
+   font-size: 14px;
+   line-height: 1.5;
++  -webkit-font-smoothing: antialiased;
+ }
+ 
+ a { color: inherit; text-decoration: none; }
+ button { cursor: pointer; font-family: var(--font); }
+-input, select, textarea {
+-  font-family: var(--font);
+-  font-size: 14px;
+-}
++input, select, textarea { font-family: var(--font); font-size: 14px; }
+ 
+-/* ── Utilities ── */
+-.badge {
+-  display: inline-flex;
++/* ── Page header ── */
++.page-header {
++  display: flex;
+   align-items: center;
+-  justify-content: center;
+-  min-width: 20px;
+-  height: 20px;
+-  padding: 0 6px;
+-  border-radius: 10px;
+-  font-size: 11px;
+-  font-weight: 600;
+-  background: var(--accent);
+-  color: #fff;
++  justify-content: space-between;
++  margin-bottom: 28px;
++  gap: 16px;
++}
++.page-header h1 {
++  font-size: 20px;
++  font-weight: 700;
++  color: var(--text);
++  letter-spacing: -0.02em;
++}
++.page-header-actions {
++  display: flex;
++  align-items: center;
++  gap: 8px;
+ }
+ 
++/* ── Buttons ── */
+ .btn {
+   display: inline-flex;
+   align-items: center;
+   gap: 6px;
+   padding: 8px 16px;
+-  border-radius: 6px;
++  border-radius: var(--radius-sm);
+   border: none;
+   font-size: 13px;
+   font-weight: 500;
+-  transition: opacity 0.15s;
++  line-height: 1;
+   cursor: pointer;
++  transition: all 0.15s;
++  white-space: nowrap;
+ }
+-.btn:hover { opacity: 0.85; }
+-.btn-primary { background: var(--navy); color: #fff; }
+-.btn-danger  { background: var(--danger); color: #fff; }
+-.btn-ghost   { background: transparent; border: 1px solid var(--border); color: var(--text); }
++.btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
++.btn:active { transform: translateY(0); }
+ 
++.btn-primary {
++  background: var(--navy);
++  color: #fff;
++}
++.btn-primary:hover { background: var(--navy-mid); }
++
++.btn-accent {
++  background: var(--accent);
++  color: #fff;
++}
++.btn-accent:hover { background: var(--accent-hover); }
++
++.btn-danger {
++  background: var(--danger);
++  color: #fff;
++}
++
++.btn-ghost {
++  background: transparent;
++  border: 1px solid var(--border);
++  color: var(--text-secondary);
++  box-shadow: var(--shadow-sm);
++}
++.btn-ghost:hover { background: var(--bg-subtle); border-color: var(--border-strong); }
++
++.btn-sm {
++  padding: 5px 11px;
++  font-size: 12px;
++}
++
++/* ── Card ── */
+ .card {
+   background: var(--surface);
+   border: 1px solid var(--border);
+-  border-radius: 8px;
++  border-radius: var(--radius);
+   padding: 24px;
++  box-shadow: var(--shadow-sm);
+ }
+ 
++/* ── Forms ── */
+ .form-group { margin-bottom: 20px; }
++
+ .form-label {
+   display: block;
+-  font-size: 13px;
+-  font-weight: 500;
+-  color: var(--text);
++  font-size: 12.5px;
++  font-weight: 600;
++  color: var(--text-secondary);
+   margin-bottom: 6px;
++  text-transform: uppercase;
++  letter-spacing: 0.04em;
++}
++
++.form-hint {
++  display: block;
++  font-size: 11.5px;
++  color: var(--muted);
++  margin-top: 4px;
+ }
+-.form-input, .form-select, .form-textarea {
++
++.form-input,
++.form-select,
++.form-textarea {
+   width: 100%;
+-  padding: 8px 12px;
++  padding: 9px 12px;
+   border: 1px solid var(--border);
+-  border-radius: 6px;
++  border-radius: var(--radius-sm);
+   font-size: 14px;
+   color: var(--text);
+-  background: #fff;
++  background: var(--surface);
+   outline: none;
+-  transition: border-color 0.15s;
++  transition: border-color 0.15s, box-shadow 0.15s;
++  box-shadow: var(--shadow-sm);
+ }
+-.form-input:focus, .form-select:focus, .form-textarea:focus {
+-  border-color: var(--navy);
++.form-input:focus,
++.form-select:focus,
++.form-textarea:focus {
++  border-color: var(--accent);
++  box-shadow: 0 0 0 3px rgb(59 130 246 / 0.12);
+ }
+ .form-textarea { resize: vertical; min-height: 100px; }
+ 
++/* ── Badge ── */
++.badge {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  min-width: 18px;
++  height: 18px;
++  padding: 0 5px;
++  border-radius: 9px;
++  font-size: 10px;
++  font-weight: 700;
++  background: var(--accent);
++  color: #fff;
++}
++.badge-muted {
++  background: var(--bg-subtle);
++  color: var(--muted);
++}
++
++/* ── Status badges ── */
+ .status-badge {
+   display: inline-block;
+   padding: 3px 10px;
+@@ -109,30 +206,942 @@ input, select, textarea {
+   text-transform: uppercase;
+   letter-spacing: 0.05em;
+ }
+-.status-available { background: #dcfce7; color: #15803d; }
+-.status-draft     { background: #f3f4f6; color: #6b7280; }
+-.status-sold_out  { background: #fee2e2; color: #dc2626; }
+-.status-pending   { background: #fef9c3; color: #a16207; }
+-.status-paid      { background: #dcfce7; color: #15803d; }
+-.status-shipped   { background: #dbeafe; color: #1d4ed8; }
+-.status-delivered { background: #f0fdf4; color: #166534; }
+-.status-cancelled { background: #fee2e2; color: #dc2626; }
+ 
+-table { width: 100%; border-collapse: collapse; }
++/* Producto */
++.status-available  { background: #dcfce7; color: #15803d; }
++.status-draft      { background: #f1f5f9; color: #64748b; }
++.status-sold_out   { background: #fee2e2; color: #dc2626; }
++.status-discontinued { background: #fef3c7; color: #92400e; }
++
++/* Pedido — estado */
++.status-created    { background: #e0f2fe; color: #0369a1; }
++.status-preparing  { background: #fef3c7; color: #92400e; }
++.status-shipped    { background: #ede9fe; color: #5b21b6; }
++.status-delivered  { background: #dcfce7; color: #166534; }
++.status-cancelled  { background: #fee2e2; color: #991b1b; }
++
++/* Pedido — pago */
++.status-pending  { background: #fef9c3; color: #a16207; }
++.status-paid     { background: #dcfce7; color: #15803d; }
++.status-failed   { background: #fee2e2; color: #dc2626; }
++.status-refunded { background: #f3e8ff; color: #6b21a8; }
++
++/* ── Tables ── */
++.table-wrap {
++  overflow-x: auto;
++}
++table {
++  width: 100%;
++  border-collapse: collapse;
++}
++thead {
++  background: var(--bg-subtle);
++}
+ th {
+   text-align: left;
+   font-size: 11px;
+   font-weight: 600;
+   text-transform: uppercase;
+-  letter-spacing: 0.08em;
++  letter-spacing: 0.07em;
+   color: var(--muted);
+   padding: 10px 16px;
+   border-bottom: 1px solid var(--border);
++  white-space: nowrap;
+ }
+ td {
+-  padding: 14px 16px;
++  padding: 13px 16px;
+   border-bottom: 1px solid var(--border);
+   font-size: 13px;
++  color: var(--text);
+ }
+ tr:last-child td { border-bottom: none; }
+-tr:hover td { background: #f9fafb; }
++tbody tr:hover td { background: #f8fafc; }
++
++/* ── Section divider ── */
++.section-title {
++  font-size: 11px;
++  font-weight: 700;
++  text-transform: uppercase;
++  letter-spacing: 0.08em;
++  color: var(--muted);
++  margin: 28px 0 12px;
++}
++.section-title:first-child { margin-top: 0; }
++
++/* ── Alert ── */
++.alert {
++  display: flex;
++  align-items: flex-start;
++  gap: 12px;
++  padding: 14px 16px;
++  border-radius: var(--radius-sm);
++  font-size: 13px;
++}
++.alert-warning {
++  background: #fffbeb;
++  border: 1px solid #fde68a;
++  color: #92400e;
++}
++.alert-danger {
++  background: #fef2f2;
++  border: 1px solid #fecaca;
++  color: #991b1b;
++}
++.alert-success {
++  background: #f0fdf4;
++  border: 1px solid #bbf7d0;
++  color: #166534;
++}
++
++/* ══════════════════════════════════════════
++   SHOP — Variables + Estilos globales
++   ══════════════════════════════════════════ */
++
++:root {
++  --shop-navy:      #18293d;
++  --shop-navy-deep: #101d2c;
++  --shop-beige:     #f4efe8;
++  --shop-beige-soft:#f7f3ed;
++  --shop-white:     #fffdf9;
++  --shop-muted:     #4d5c6b;
++  --shop-line:      rgba(24,41,61,0.1);
++  --shop-shadow:    0 22px 60px rgba(16,29,44,0.12);
++  --font-display:   'Cormorant Garamond', Georgia, 'Times New Roman', serif;
++  --font-ui:        'Inter', system-ui, -apple-system, sans-serif;
++  --shop-container: min(1360px, calc(100% - 48px));
++}
++
++/* ── Layout ── */
++.shop-container {
++  width: var(--shop-container);
++  margin: 0 auto;
++}
++
++/* ── Header ── */
++.site-header {
++  position: sticky;
++  top: 0;
++  z-index: 100;
++  background: rgba(255,255,255,0.96);
++  backdrop-filter: blur(14px);
++  -webkit-backdrop-filter: blur(14px);
++  border-bottom: 1px solid var(--shop-line);
++}
++.nav-wrap {
++  min-height: 80px;
++  display: grid;
++  grid-template-columns: 1fr auto 1fr;
++  align-items: center;
++  gap: 20px;
++}
++.menu-left {
++  list-style: none;
++  padding: 0;
++  margin: 0;
++  display: flex;
++  align-items: center;
++  gap: 28px;
++}
++.menu-left a {
++  font-size: 0.68rem;
++  font-weight: 600;
++  letter-spacing: 0.2em;
++  text-transform: uppercase;
++  color: rgba(24,41,61,0.65);
++  transition: color 0.2s;
++}
++.menu-left a:hover { color: var(--shop-navy); }
++
++.brand-mark { text-align: center; }
++.brand-logo {
++  display: block;
++  font-family: var(--font-display);
++  font-size: clamp(2rem, 4vw, 3rem);
++  font-weight: 700;
++  letter-spacing: -0.04em;
++  line-height: 0.9;
++  color: var(--shop-navy);
++}
++.brand-tagline {
++  display: block;
++  font-size: 0.48rem;
++  letter-spacing: 0.28em;
++  text-transform: uppercase;
++  color: rgba(24,41,61,0.38);
++  margin-top: 5px;
++}
++
++.nav-actions {
++  display: flex;
++  align-items: center;
++  justify-content: flex-end;
++  gap: 4px;
++}
++.bag-btn {
++  position: relative;
++  width: 44px;
++  height: 44px;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  background: none;
++  border: none;
++  cursor: pointer;
++  color: var(--shop-navy);
++}
++.bag-btn svg { width: 22px; height: 22px; }
++.bag-count {
++  position: absolute;
++  top: 5px; right: 2px;
++  width: 17px; height: 17px;
++  display: grid;
++  place-items: center;
++  border-radius: 50%;
++  background: var(--shop-navy);
++  color: #fff;
++  font-size: 0.55rem;
++  font-weight: 700;
++}
++
++.menu-toggle {
++  display: none;
++  width: 44px; height: 44px;
++  padding: 0;
++  border: none;
++  background: transparent;
++  cursor: pointer;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  gap: 5px;
++}
++.menu-toggle span {
++  display: block;
++  width: 20px; height: 1.5px;
++  background: var(--shop-navy);
++  transition: transform 0.2s, opacity 0.2s;
++}
++
++/* ── Trust bar ── */
++.trust-bar {
++  background: var(--shop-navy-deep);
++  padding: 10px 0;
++}
++.trust-wrap {
++  display: flex;
++  justify-content: center;
++  gap: clamp(20px, 5vw, 72px);
++  flex-wrap: wrap;
++}
++.trust-item {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  font-size: 0.65rem;
++  font-weight: 600;
++  letter-spacing: 0.16em;
++  text-transform: uppercase;
++  color: rgba(255,255,255,0.7);
++}
++.trust-item svg { opacity: 0.7; flex-shrink: 0; }
++
++/* ── Shop hero ── */
++.shop-hero {
++  padding: 72px 0 56px;
++  text-align: center;
++  border-bottom: 1px solid var(--shop-line);
++}
++.shop-hero-eyebrow {
++  font-size: 0.62rem;
++  letter-spacing: 0.26em;
++  text-transform: uppercase;
++  color: rgba(24,41,61,0.45);
++  margin-bottom: 14px;
++}
++.shop-hero h1 {
++  font-family: var(--font-display);
++  font-size: clamp(3.5rem, 8vw, 6.5rem);
++  font-weight: 600;
++  letter-spacing: -0.03em;
++  line-height: 1;
++  margin: 0 0 12px;
++  color: var(--shop-navy);
++}
++.shop-hero-sub {
++  font-size: 0.82rem;
++  color: var(--shop-muted);
++  letter-spacing: 0.06em;
++  margin: 0;
++}
++
++/* ── Category tabs ── */
++.shop-cats {
++  background: #fff;
++  border-bottom: 1px solid var(--shop-line);
++  position: sticky;
++  top: 80px;
++  z-index: 90;
++}
++.shop-cats-inner {
++  display: flex;
++  overflow-x: auto;
++  scrollbar-width: none;
++}
++.shop-cats-inner::-webkit-scrollbar { display: none; }
++.cat-btn {
++  flex-shrink: 0;
++  background: none;
++  border: none;
++  border-bottom: 2px solid transparent;
++  cursor: pointer;
++  font-family: var(--font-ui);
++  font-size: 0.65rem;
++  letter-spacing: 0.2em;
++  text-transform: uppercase;
++  color: var(--shop-muted);
++  padding: 16px 20px;
++  transition: color 0.2s, border-color 0.2s;
++  white-space: nowrap;
++}
++.cat-btn:hover { color: var(--shop-navy); }
++.cat-btn.active {
++  color: var(--shop-navy);
++  font-weight: 600;
++  border-bottom-color: var(--shop-navy);
++}
++
++/* ── Product grid ── */
++.shop-section { padding: 56px 0 96px; }
++.product-grid {
++  display: grid;
++  grid-template-columns: repeat(3, 1fr);
++  gap: 48px 28px;
++}
++
++/* Product card */
++.product-card {
++  display: flex;
++  flex-direction: column;
++  cursor: pointer;
++}
++.card-img-wrap {
++  aspect-ratio: 3 / 4;
++  background: var(--shop-beige);
++  position: relative;
++  overflow: hidden;
++  margin-bottom: 14px;
++}
++.card-img-wrap img {
++  width: 100%;
++  height: 100%;
++  object-fit: cover;
++  transition: transform 0.6s cubic-bezier(.25,.46,.45,.94);
++}
++.product-card:hover .card-img-wrap img { transform: scale(1.05); }
++.card-placeholder {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  width: 100%;
++  height: 100%;
++  gap: 6px;
++}
++.card-placeholder-mark {
++  font-family: var(--font-display);
++  font-size: clamp(2rem, 4vw, 3rem);
++  letter-spacing: -0.03em;
++  color: rgba(24,41,61,0.12);
++}
++.card-placeholder-sub {
++  font-size: 0.58rem;
++  letter-spacing: 0.2em;
++  text-transform: uppercase;
++  color: rgba(24,41,61,0.2);
++}
++.card-badge {
++  position: absolute;
++  top: 12px; left: 12px;
++  font-size: 0.55rem;
++  letter-spacing: 0.18em;
++  text-transform: uppercase;
++  padding: 4px 9px;
++  font-weight: 700;
++}
++.card-badge-new { background: var(--shop-navy); color: #fff; }
++.card-badge-out { background: rgba(24,41,61,0.25); color: #fff; }
++
++.card-colors {
++  display: flex;
++  gap: 5px;
++  margin-bottom: 8px;
++}
++.c-dot {
++  width: 10px; height: 10px;
++  border-radius: 50%;
++  display: inline-block;
++  flex-shrink: 0;
++}
++.c-dot-outline { outline: 1px solid rgba(0,0,0,0.15); }
++
++.card-cat {
++  font-size: 0.6rem;
++  letter-spacing: 0.2em;
++  text-transform: uppercase;
++  color: var(--shop-muted);
++  margin: 0 0 3px;
++}
++.card-name {
++  font-family: var(--font-display);
++  font-size: 1.2rem;
++  font-weight: 600;
++  letter-spacing: -0.01em;
++  margin: 0 0 4px;
++  line-height: 1.2;
++  color: var(--shop-navy);
++}
++.card-price {
++  font-size: 0.85rem;
++  font-weight: 500;
++  color: var(--shop-navy);
++  margin: 0 0 12px;
++}
++.card-link {
++  font-size: 0.65rem;
++  letter-spacing: 0.18em;
++  text-transform: uppercase;
++  color: var(--shop-navy);
++  font-weight: 600;
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  transition: gap 0.2s;
++}
++.card-link:hover { gap: 10px; }
++
++.shop-empty {
++  grid-column: 1 / -1;
++  text-align: center;
++  padding: 80px 0;
++  font-size: 0.85rem;
++  letter-spacing: 0.1em;
++  color: var(--shop-muted);
++}
++
++/* ── PDP ── */
++.pdp-breadcrumb {
++  padding: 18px 0;
++  font-size: 0.65rem;
++  letter-spacing: 0.14em;
++  text-transform: uppercase;
++  color: var(--shop-muted);
++  display: flex;
++  align-items: center;
++  gap: 8px;
++}
++.pdp-breadcrumb a { color: var(--shop-muted); transition: color 0.15s; }
++.pdp-breadcrumb a:hover { color: var(--shop-navy); }
++.pdp-breadcrumb-sep { opacity: 0.35; }
++
++.pdp-layout {
++  display: grid;
++  grid-template-columns: 1fr 1fr;
++  gap: 64px;
++  align-items: start;
++  padding-bottom: 96px;
++}
++.pdp-media {
++  position: sticky;
++  top: 100px;
++}
++.pdp-img-main {
++  aspect-ratio: 3 / 4;
++  background: var(--shop-beige);
++  overflow: hidden;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++}
++.pdp-img-main img {
++  width: 100%;
++  height: 100%;
++  object-fit: cover;
++  transition: opacity 0.25s;
++}
++.pdp-img-placeholder {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  gap: 12px;
++  width: 100%;
++  height: 100%;
++}
++.pdp-img-placeholder .im-mark {
++  font-family: var(--font-display);
++  font-size: clamp(4rem, 8vw, 7rem);
++  letter-spacing: -0.04em;
++  color: rgba(24,41,61,0.08);
++  line-height: 1;
++}
++.pdp-img-placeholder .prod-ghost {
++  font-size: 0.6rem;
++  letter-spacing: 0.24em;
++  text-transform: uppercase;
++  color: rgba(24,41,61,0.18);
++}
++.pdp-thumbs {
++  display: flex;
++  gap: 8px;
++  margin-top: 10px;
++}
++.pdp-thumb {
++  width: 68px;
++  aspect-ratio: 3/4;
++  background: var(--shop-beige);
++  overflow: hidden;
++  cursor: pointer;
++  opacity: 0.55;
++  transition: opacity 0.2s;
++  border: 1px solid transparent;
++  flex-shrink: 0;
++}
++.pdp-thumb img { width: 100%; height: 100%; object-fit: cover; }
++.pdp-thumb.active { opacity: 1; border-color: var(--shop-navy); }
++.pdp-thumb:hover { opacity: 0.85; }
++
++/* PDP Info */
++.pdp-info { padding-top: 8px; }
++.pdp-eyebrow {
++  font-size: 0.62rem;
++  letter-spacing: 0.22em;
++  text-transform: uppercase;
++  color: var(--shop-muted);
++  margin-bottom: 10px;
++}
++.pdp-name {
++  font-family: var(--font-display);
++  font-size: clamp(2.2rem, 4vw, 3rem);
++  font-weight: 600;
++  letter-spacing: -0.02em;
++  margin: 0 0 6px;
++  line-height: 1.05;
++  color: var(--shop-navy);
++}
++.pdp-subtitle {
++  font-size: 0.88rem;
++  color: var(--shop-muted);
++  margin: 0 0 16px;
++}
++.pdp-price-row {
++  display: flex;
++  align-items: baseline;
++  gap: 10px;
++  padding-bottom: 24px;
++  border-bottom: 1px solid var(--shop-line);
++  margin-bottom: 28px;
++}
++.pdp-price {
++  font-size: 1.2rem;
++  font-weight: 600;
++  color: var(--shop-navy);
++}
++.pdp-compare {
++  font-size: 0.95rem;
++  color: var(--shop-muted);
++  text-decoration: line-through;
++}
++
++/* Variant selectors */
++.pdp-var-row { margin-bottom: 20px; }
++.pdp-var-label {
++  font-size: 0.62rem;
++  letter-spacing: 0.18em;
++  text-transform: uppercase;
++  color: var(--shop-muted);
++  margin-bottom: 10px;
++  display: flex;
++  justify-content: space-between;
++}
++.pdp-var-label strong { color: var(--shop-navy); font-weight: 600; }
++.pdp-var-opts { display: flex; flex-wrap: wrap; gap: 8px; }
++
++.pdp-color-btn {
++  width: 30px; height: 30px;
++  border-radius: 50%;
++  border: 2px solid transparent;
++  cursor: pointer;
++  outline: 3px solid transparent;
++  outline-offset: 2px;
++  transition: outline-color 0.15s, transform 0.15s;
++  flex-shrink: 0;
++}
++.pdp-color-btn:hover:not(:disabled) { transform: scale(1.1); }
++.pdp-color-btn.sel { outline-color: var(--shop-navy); }
++.pdp-color-btn:disabled { opacity: 0.2; cursor: not-allowed; }
++
++.pdp-size-btn {
++  background: none;
++  border: 1px solid var(--shop-line);
++  cursor: pointer;
++  font-family: var(--font-ui);
++  font-size: 0.75rem;
++  letter-spacing: 0.06em;
++  padding: 8px 16px;
++  color: var(--shop-navy);
++  transition: border-color 0.15s, background 0.15s;
++  min-width: 44px;
++  text-align: center;
++}
++.pdp-size-btn:hover:not(:disabled) { border-color: var(--shop-navy); }
++.pdp-size-btn.sel { background: var(--shop-navy); border-color: var(--shop-navy); color: #fff; }
++.pdp-size-btn:disabled { opacity: 0.22; cursor: not-allowed; text-decoration: line-through; }
++
++.pdp-stock {
++  font-size: 0.65rem;
++  letter-spacing: 0.12em;
++  text-transform: uppercase;
++  margin-bottom: 20px;
++  min-height: 1.4em;
++  color: var(--shop-muted);
++}
++.pdp-stock-low  { color: #b45309; }
++.pdp-stock-out  { color: rgba(24,41,61,0.3); }
++.pdp-stock-ok   { color: #2d6a4f; }
++
++.pdp-buy {
++  display: block;
++  width: 100%;
++  padding: 16px;
++  text-align: center;
++  background: var(--shop-navy);
++  color: #fff;
++  border: none;
++  font-family: var(--font-ui);
++  font-size: 0.72rem;
++  font-weight: 600;
++  letter-spacing: 0.22em;
++  text-transform: uppercase;
++  cursor: pointer;
++  transition: background 0.2s;
++  margin-bottom: 12px;
++}
++.pdp-buy:hover:not(:disabled) { background: var(--shop-navy-deep); }
++.pdp-buy:disabled {
++  background: rgba(24,41,61,0.15);
++  cursor: not-allowed;
++}
++
++.pdp-shipping {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  font-size: 0.7rem;
++  color: var(--shop-muted);
++  letter-spacing: 0.04em;
++  padding: 12px 0;
++  border-top: 1px solid var(--shop-line);
++  margin-top: 8px;
++}
++
++.pdp-description {
++  margin-top: 40px;
++  padding-top: 40px;
++  border-top: 1px solid var(--shop-line);
++}
++.pdp-description h3 {
++  font-size: 0.62rem;
++  letter-spacing: 0.2em;
++  text-transform: uppercase;
++  color: var(--shop-muted);
++  margin-bottom: 16px;
++}
++.pdp-description-body {
++  font-size: 0.92rem;
++  line-height: 1.8;
++  color: var(--shop-muted);
++}
++.pdp-description-body p { margin-bottom: 12px; }
++.pdp-description-body p:last-child { margin-bottom: 0; }
++
++/* ── Cart Drawer ── */
++.cart-overlay {
++  position: fixed;
++  inset: 0;
++  background: rgba(15,23,42,0.4);
++  z-index: 200;
++  opacity: 0;
++  pointer-events: none;
++  transition: opacity 0.3s;
++}
++.cart-overlay.open { opacity: 1; pointer-events: all; }
++
++.cart-drawer {
++  position: fixed;
++  top: 0; right: 0;
++  width: min(400px, 100vw);
++  height: 100vh;
++  background: #fff;
++  z-index: 201;
++  display: flex;
++  flex-direction: column;
++  transform: translateX(100%);
++  transition: transform 0.35s cubic-bezier(.32,.72,0,1);
++  box-shadow: -8px 0 32px rgba(15,23,42,0.12);
++}
++.cart-drawer.open { transform: translateX(0); }
++
++.cart-header {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  padding: 20px 24px;
++  border-bottom: 1px solid var(--shop-line);
++  flex-shrink: 0;
++}
++.cart-title {
++  font-family: var(--font-display);
++  font-size: 1.3rem;
++  font-weight: 600;
++  color: var(--shop-navy);
++  letter-spacing: -0.01em;
++}
++.cart-close {
++  width: 36px; height: 36px;
++  display: flex; align-items: center; justify-content: center;
++  background: none; border: none; cursor: pointer;
++  color: var(--shop-muted);
++  border-radius: 50%;
++  transition: background 0.15s;
++}
++.cart-close:hover { background: var(--shop-beige); }
++
++.cart-items {
++  flex: 1;
++  overflow-y: auto;
++  padding: 16px 24px;
++}
++.cart-item {
++  display: flex;
++  gap: 14px;
++  padding: 16px 0;
++  border-bottom: 1px solid var(--shop-line);
++}
++.cart-item:last-child { border-bottom: none; }
++.cart-item-img {
++  width: 72px;
++  aspect-ratio: 3/4;
++  background: var(--shop-beige);
++  overflow: hidden;
++  flex-shrink: 0;
++}
++.cart-item-img img { width: 100%; height: 100%; object-fit: cover; }
++.cart-item-body { flex: 1; min-width: 0; }
++.cart-item-name {
++  font-family: var(--font-display);
++  font-size: 1rem;
++  font-weight: 600;
++  color: var(--shop-navy);
++  margin: 0 0 4px;
++}
++.cart-item-meta {
++  font-size: 0.72rem;
++  color: var(--shop-muted);
++  letter-spacing: 0.04em;
++  margin-bottom: 10px;
++}
++.cart-item-row {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++}
++.cart-item-price {
++  font-size: 0.88rem;
++  font-weight: 600;
++  color: var(--shop-navy);
++}
++.cart-item-remove {
++  background: none; border: none; cursor: pointer;
++  font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase;
++  color: var(--shop-muted); padding: 0;
++  transition: color 0.15s;
++}
++.cart-item-remove:hover { color: #ef4444; }
++
++.cart-empty {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  height: 100%;
++  gap: 14px;
++  color: var(--shop-muted);
++  text-align: center;
++  padding: 32px;
++}
++.cart-empty-icon { opacity: 0.25; }
++.cart-empty p { font-size: 0.85rem; }
++
++.cart-footer {
++  padding: 20px 24px;
++  border-top: 1px solid var(--shop-line);
++  flex-shrink: 0;
++  background: #fff;
++}
++.cart-subtotal {
++  display: flex;
++  justify-content: space-between;
++  align-items: baseline;
++  margin-bottom: 16px;
++}
++.cart-subtotal-label {
++  font-size: 0.65rem;
++  letter-spacing: 0.18em;
++  text-transform: uppercase;
++  color: var(--shop-muted);
++}
++.cart-subtotal-value {
++  font-size: 1.1rem;
++  font-weight: 700;
++  color: var(--shop-navy);
++  font-family: var(--font-display);
++}
++.cart-checkout-btn {
++  display: block;
++  width: 100%;
++  padding: 15px;
++  text-align: center;
++  background: var(--shop-navy);
++  color: #fff;
++  border: none;
++  font-family: var(--font-ui);
++  font-size: 0.7rem;
++  font-weight: 600;
++  letter-spacing: 0.22em;
++  text-transform: uppercase;
++  cursor: pointer;
++  transition: background 0.2s;
++}
++.cart-checkout-btn:hover { background: var(--shop-navy-deep); }
++
++/* ── Shop Footer ── */
++.shop-footer {
++  background: var(--shop-navy-deep);
++  padding: 72px 0 32px;
++  color: rgba(255,255,255,0.65);
++}
++.footer-grid {
++  display: grid;
++  grid-template-columns: 2fr 1fr 1fr 1fr;
++  gap: 40px;
++  padding-bottom: 48px;
++  border-bottom: 1px solid rgba(255,255,255,0.08);
++  margin-bottom: 28px;
++}
++.footer-brand .brand-logo {
++  font-size: clamp(2.6rem, 4vw, 3.6rem);
++  color: #fff;
++  margin-bottom: 14px;
++  display: block;
++}
++.footer-brand p {
++  font-size: 0.85rem;
++  line-height: 1.75;
++}
++.footer-nav h3 {
++  font-size: 0.62rem;
++  font-weight: 700;
++  letter-spacing: 0.2em;
++  text-transform: uppercase;
++  color: #fff;
++  margin: 0 0 16px;
++}
++.footer-nav ul {
++  list-style: none;
++  padding: 0;
++  margin: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++}
++.footer-nav a {
++  font-size: 0.85rem;
++  color: rgba(255,255,255,0.5);
++  transition: color 0.15s;
++}
++.footer-nav a:hover { color: #fff; }
++.footer-social h3 {
++  font-size: 0.62rem;
++  font-weight: 700;
++  letter-spacing: 0.2em;
++  text-transform: uppercase;
++  color: #fff;
++  margin: 0 0 16px;
++}
++.social-links {
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++}
++.social-links a {
++  display: inline-flex;
++  align-items: center;
++  gap: 10px;
++  font-size: 0.7rem;
++  font-weight: 600;
++  letter-spacing: 0.14em;
++  text-transform: uppercase;
++  color: rgba(255,255,255,0.5);
++  transition: color 0.15s;
++}
++.social-links a:hover { color: #fff; }
++.footer-bottom {
++  display: flex;
++  justify-content: space-between;
++  gap: 16px;
++  font-size: 0.65rem;
++  letter-spacing: 0.08em;
++  color: rgba(255,255,255,0.3);
++}
++.footer-bottom-links {
++  display: flex;
++  gap: 16px;
++}
++.footer-bottom-links a { color: rgba(255,255,255,0.3); transition: color 0.15s; }
++.footer-bottom-links a:hover { color: rgba(255,255,255,0.6); }
++
++/* ── Shop responsive ── */
++@media (max-width: 1024px) {
++  .product-grid { grid-template-columns: repeat(2, 1fr); gap: 36px 20px; }
++  .footer-grid { grid-template-columns: 1fr 1fr; }
++}
++@media (max-width: 768px) {
++  .nav-wrap { grid-template-columns: auto 1fr auto; }
++  .menu-toggle { display: flex; }
++  .site-nav {
++    display: none;
++    position: absolute;
++    top: 100%;
++    left: 0; right: 0;
++    background: rgba(255,253,249,0.98);
++    border-bottom: 1px solid var(--shop-line);
++    box-shadow: 0 8px 24px rgba(15,23,42,0.1);
++  }
++  .site-nav.open { display: block; }
++  .menu-left {
++    flex-direction: column;
++    align-items: flex-start;
++    padding: 8px 24px 16px;
++    gap: 0;
++  }
++  .menu-left li { width: 100%; border-top: 1px solid var(--shop-line); }
++  .menu-left a { display: block; padding: 14px 0; }
++  .pdp-layout { grid-template-columns: 1fr; gap: 32px; }
++  .pdp-media { position: static; }
++  .footer-grid { grid-template-columns: 1fr; gap: 32px; }
++  .footer-bottom { flex-direction: column; align-items: center; }
++}
++@media (max-width: 600px) {
++  .product-grid { grid-template-columns: repeat(2, 1fr); gap: 24px 12px; }
++  .cat-btn { padding: 14px 14px; font-size: 0.6rem; }
++}
+diff --git a/src/app.html b/src/app.html
+index f273cc5..44b067c 100644
+--- a/src/app.html
++++ b/src/app.html
+@@ -1,8 +1,11 @@
+ <!doctype html>
+-<html lang="en">
++<html lang="es">
+ 	<head>
+ 		<meta charset="utf-8" />
+ 		<meta name="viewport" content="width=device-width, initial-scale=1" />
++		<link rel="preconnect" href="https://fonts.googleapis.com" />
++		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
++		<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+ 		%sveltekit.head%
+ 	</head>
+ 	<body data-sveltekit-preload-data="hover">
+diff --git a/src/lib/server/supabase.ts b/src/lib/server/supabase.ts
+index 4fa7211..24ae974 100644
+--- a/src/lib/server/supabase.ts
++++ b/src/lib/server/supabase.ts
+@@ -1,5 +1,7 @@
+ import { createServerClient } from '@supabase/ssr';
++import { createClient } from '@supabase/supabase-js';
+ import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
++import { SUPABASE_SERVICE_KEY } from '$env/static/private';
+ import type { Cookies } from '@sveltejs/kit';
+ 
+ export function createSupabaseServerClient(cookies: Cookies) {
+@@ -12,3 +14,8 @@ export function createSupabaseServerClient(cookies: Cookies) {
+ 		}
+ 	});
+ }
++
++// Client con service key para queries públicas del shop (server-side only, nunca llega al browser)
++export function createServiceClient() {
++	return createClient(PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_KEY);
++}
+diff --git a/src/routes/+page.svelte b/src/routes/+page.svelte
+index cc88df0..81d2293 100644
+--- a/src/routes/+page.svelte
++++ b/src/routes/+page.svelte
+@@ -1,2 +1,145 @@
+-<h1>Welcome to SvelteKit</h1>
+-<p>Visit <a href="https://svelte.dev/docs/kit">svelte.dev/docs/kit</a> to read the documentation</p>
++<script lang="ts">
++	import ShopHeader from '$lib/components/ShopHeader.svelte';
++	import ShopFooter from '$lib/components/ShopFooter.svelte';
++	import type { PageData } from './$types';
++
++	let { data }: { data: PageData } = $props();
++
++	// Colores conocidos → hex
++	const COLOR_HEX: Record<string, { bg: string; outline?: boolean }> = {
++		'Negro':  { bg: '#141414' },
++		'Navy':   { bg: '#18293d' },
++		'Blanco': { bg: '#e8e5e0', outline: true },
++		'Burdeo': { bg: '#6b1f2a' },
++		'Gris':   { bg: '#9ca3af' },
++		'Rojo':   { bg: '#dc2626' },
++		'Azul':   { bg: '#3b82f6' },
++		'Verde':  { bg: '#22c55e' },
++		'Beige':  { bg: '#d4c4a8', outline: true },
++	};
++
++	function colorHex(name: string) {
++		return COLOR_HEX[name] ?? { bg: '#94a3b8' };
++	}
++
++	function clp(n: number) {
++		return '$' + (n ?? 0).toLocaleString('es-CL');
++	}
++
++	// Categorías raíz para los tabs
++	let rootCats = $derived(data.categories.filter((c: any) => !c.parent_id));
++</script>
++
++<svelte:head>
++	<title>Colección — IM Sportswear</title>
++	<meta name="description" content="IM Sportswear — Sportswear clásico y minimalista para la vida moderna." />
++</svelte:head>
++
++<ShopHeader categories={data.categories} />
++
++<!-- Trust bar -->
++<div class="trust-bar">
++	<div class="shop-container trust-wrap">
++		<div class="trust-item">
++			<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
++			<span>Envío gratis sobre $50.000</span>
++		</div>
++		<div class="trust-item">
++			<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/></svg>
++			<span>Devolución 30 días</span>
++		</div>
++		<div class="trust-item">
++			<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
++			<span>Pago 100% seguro</span>
++		</div>
++	</div>
++</div>
++
++<!-- Hero -->
++<div class="shop-hero">
++	<p class="shop-hero-eyebrow">IM Sportswear · Colección 2026</p>
++	<h1>Colección</h1>
++	<p class="shop-hero-sub">Classic · Sport · Modern Life</p>
++</div>
++
++<!-- Category tabs -->
++{#if rootCats.length > 0}
++<div class="shop-cats">
++	<div class="shop-container">
++		<div class="shop-cats-inner">
++			<a href="/" class="cat-btn" class:active={data.currentCategory === 'all'}>Todos</a>
++			{#each rootCats as cat}
++				<a href="/?categoria={cat.slug}" class="cat-btn" class:active={data.currentCategory === cat.slug}>
++					{cat.name}
++				</a>
++			{/each}
++		</div>
++	</div>
++</div>
++{/if}
++
++<!-- Product grid -->
++<main id="contenido">
++	<div class="shop-section">
++		<div class="shop-container">
++			<div class="product-grid">
++				{#if data.products.length === 0}
++					<div class="shop-empty">
++						<p>Sin productos en esta categoría.</p>
++					</div>
++				{:else}
++					{#each data.products as p}
++						<a href="/productos/{p.slug}" class="product-card">
++							<div class="card-img-wrap">
++								{#if p.imageUrl}
++									<img src={p.imageUrl} alt={p.name} loading="lazy" />
++								{:else}
++									<div class="card-placeholder">
++										<span class="card-placeholder-mark">IM</span>
++										<span class="card-placeholder-sub">{p.subtitle ?? ''}</span>
++									</div>
++								{/if}
++								{#if p.totalStock === 0}
++									<span class="card-badge card-badge-out">Agotado</span>
++								{:else if p.featured}
++									<span class="card-badge card-badge-new">Nuevo</span>
++								{/if}
++							</div>
++
++							{#if p.colors.length > 0}
++								<div class="card-colors">
++									{#each p.colors as c}
++										{@const ch = colorHex(c)}
++										<span
++											class="c-dot"
++											class:c-dot-outline={ch.outline}
++											style="background:{ch.bg}"
++											title={c}
++										></span>
++									{/each}
++								</div>
++							{/if}
++
++							{#if p.categories}
++								<p class="card-cat">{p.categories.name}</p>
++							{/if}
++							<p class="card-name">{p.name}</p>
++							<p class="card-price">
++								{clp(p.price)}
++								{#if p.compare_price}
++									<span style="font-size:0.8em;text-decoration:line-through;color:var(--shop-muted);margin-left:6px;">{clp(p.compare_price)}</span>
++								{/if}
++							</p>
++							<span class="card-link">
++								Ver producto
++								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
++							</span>
++						</a>
++					{/each}
++				{/if}
++			</div>
++		</div>
++	</div>
++</main>
++
++<ShopFooter />
+diff --git a/src/routes/admin/+layout.svelte b/src/routes/admin/+layout.svelte
+index 93a5b3d..7efba4b 100644
+--- a/src/routes/admin/+layout.svelte
++++ b/src/routes/admin/+layout.svelte
+@@ -6,12 +6,14 @@
+ 
+ 	const nav = [
+ 		{ label: 'Inicio', href: '/admin', icon: 'home', exact: true },
++		{ divider: 'Gestión' },
+ 		{
+ 			label: 'Pedidos', icon: 'bag', children: [
+ 				{ label: 'Todos los pedidos', href: '/admin/pedidos' },
+-				{ label: 'Despachados', href: '/admin/pedidos/despachados' },
++				{ label: 'Despachados', href: '/admin/pedidos?status=shipped' },
+ 			]
+ 		},
++		{ divider: 'Catálogo' },
+ 		{
+ 			label: 'Productos', icon: 'box', children: [
+ 				{ label: 'Todos los productos', href: '/admin/productos' },
+@@ -19,12 +21,16 @@
+ 				{ label: 'Categorías', href: '/admin/categorias' },
+ 			]
+ 		},
++		{ divider: 'Sistema' },
+ 		{ label: 'Configuración', href: '/admin/configuracion', icon: 'settings' },
+ 	];
+ 
+ 	let openMenus: Record<string, boolean> = $state({
+ 		Pedidos: page.url.pathname.startsWith('/admin/pedidos'),
+-		Productos: page.url.pathname.startsWith('/admin/productos') || page.url.pathname.startsWith('/admin/inventario') || page.url.pathname.startsWith('/admin/categorias'),
++		Productos:
++			page.url.pathname.startsWith('/admin/productos') ||
++			page.url.pathname.startsWith('/admin/inventario') ||
++			page.url.pathname.startsWith('/admin/categorias'),
+ 	});
+ 
+ 	function isActive(href: string, exact = false) {
+@@ -36,16 +42,23 @@
+ <div class="admin-shell">
+ 	<!-- Sidebar -->
+ 	<aside class="sidebar">
++		<!-- Logo -->
+ 		<div class="sidebar-header">
+-			<a href="/" class="sidebar-logo" target="_blank" rel="noopener">
+-				<span class="sidebar-logo-mark">IM</span>
+-				<span class="sidebar-logo-label">Ver tienda ↗</span>
+-			</a>
++			<div class="sidebar-brand">
++				<span class="sidebar-mark">IM</span>
++				<div class="sidebar-brand-text">
++					<span class="sidebar-name">Sportswear</span>
++					<span class="sidebar-role">Panel Admin</span>
++				</div>
++			</div>
+ 		</div>
+ 
++		<!-- Nav -->
+ 		<nav class="sidebar-nav">
+ 			{#each nav as item}
+-				{#if item.children}
++				{#if 'divider' in item}
++					<p class="nav-divider">{item.divider}</p>
++				{:else if item.children}
+ 					<div class="nav-group">
+ 						<button
+ 							class="nav-item nav-parent"
+@@ -53,7 +66,7 @@
+ 							onclick={() => openMenus[item.label] = !openMenus[item.label]}
+ 						>
+ 							<span class="nav-icon">{@html icons[item.icon]}</span>
+-							<span>{item.label}</span>
++							<span class="nav-label">{item.label}</span>
+ 							<span class="nav-chevron" class:rotated={openMenus[item.label]}>
+ 								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+ 							</span>
+@@ -77,17 +90,22 @@
+ 						class:active={isActive(item.href!, item.exact)}
+ 					>
+ 						<span class="nav-icon">{@html icons[item.icon!]}</span>
+-						<span>{item.label}</span>
++						<span class="nav-label">{item.label}</span>
+ 					</a>
+ 				{/if}
+ 			{/each}
+ 		</nav>
+ 
++		<!-- Footer -->
+ 		<div class="sidebar-footer">
++			<a href="https://shop.imsportswear.cl" target="_blank" rel="noopener" class="footer-link">
++				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
++				Ver tienda
++			</a>
+ 			<form method="POST" action="/admin/logout" use:enhance>
+-				<button type="submit" class="nav-item" style="width:100%;border:none;background:none;text-align:left;">
+-					<span class="nav-icon">{@html icons.logout}</span>
+-					<span>Cerrar sesión</span>
++				<button type="submit" class="footer-link footer-logout">
++					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
++					Cerrar sesión
+ 				</button>
+ 			</form>
+ 		</div>
+@@ -101,11 +119,10 @@
+ 
+ <script module lang="ts">
+ 	const icons: Record<string, string> = {
+-		home: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
+-		bag: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>`,
+-		box: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
++		home:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
++		bag:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>`,
++		box:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
+ 		settings: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>`,
+-		logout: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
+ 	};
+ </script>
+ 
+@@ -122,79 +139,163 @@
+ 	display: flex;
+ 	flex-direction: column;
+ 	position: fixed;
+-	top: 0;
+-	left: 0;
++	top: 0; left: 0;
+ 	height: 100vh;
+ 	overflow-y: auto;
+ 	flex-shrink: 0;
++	border-right: 1px solid var(--sidebar-border);
+ }
++
++/* Header / Brand */
+ .sidebar-header {
+-	padding: 20px 16px;
+-	border-bottom: 1px solid rgba(255,255,255,0.06);
++	padding: 20px 16px 16px;
++	border-bottom: 1px solid var(--sidebar-border);
+ }
+-.sidebar-logo {
++.sidebar-brand {
+ 	display: flex;
+ 	align-items: center;
+ 	gap: 10px;
+-	color: #fff;
+ }
+-.sidebar-logo-mark {
+-	font-size: 1.4rem;
+-	font-weight: 700;
++.sidebar-mark {
++	width: 34px;
++	height: 34px;
++	background: #fff;
++	color: var(--sidebar-bg);
++	border-radius: 8px;
++	display: flex;
++	align-items: center;
++	justify-content: center;
++	font-size: 13px;
++	font-weight: 800;
+ 	letter-spacing: -0.04em;
++	flex-shrink: 0;
++}
++.sidebar-brand-text {
++	display: flex;
++	flex-direction: column;
++}
++.sidebar-name {
++	font-size: 13px;
++	font-weight: 600;
++	color: #f1f5f9;
++	line-height: 1.2;
+ }
+-.sidebar-logo-label {
+-	font-size: 11px;
++.sidebar-role {
++	font-size: 10.5px;
+ 	color: var(--sidebar-text);
++	line-height: 1.2;
+ }
++
++/* Nav */
+ .sidebar-nav {
+ 	flex: 1;
+-	padding: 12px 0;
++	padding: 16px 0 8px;
++	overflow-y: auto;
++}
++.nav-divider {
++	font-size: 9.5px;
++	font-weight: 700;
++	letter-spacing: 0.1em;
++	text-transform: uppercase;
++	color: #475569;
++	padding: 14px 16px 4px;
+ }
+ .nav-item {
+ 	display: flex;
+ 	align-items: center;
+-	gap: 10px;
+-	padding: 10px 16px;
++	gap: 9px;
++	padding: 8px 12px;
++	margin: 1px 8px;
+ 	font-size: 13px;
++	font-weight: 500;
+ 	color: var(--sidebar-text);
+-	transition: background 0.15s, color 0.15s;
+-	border-radius: 0;
++	border-radius: 7px;
++	transition: background 0.12s, color 0.12s;
+ 	cursor: pointer;
+-	width: 100%;
++	width: calc(100% - 16px);
++	border: none;
++	background: none;
+ 	text-align: left;
+ }
+-.nav-item:hover, .nav-item.open { background: var(--sidebar-hover); color: var(--sidebar-text-active); }
+-.nav-item.active { background: var(--sidebar-active); color: var(--sidebar-text-active); }
+-.nav-icon { display: flex; align-items: center; opacity: 0.7; }
+-.nav-parent { justify-content: flex-start; }
+-.nav-chevron { margin-left: auto; opacity: 0.5; transition: transform 0.2s; }
++.nav-item:hover { background: var(--sidebar-hover); color: var(--sidebar-text-active); }
++.nav-item.active {
++	background: var(--sidebar-active);
++	color: var(--sidebar-text-active);
++}
++.nav-item.active .nav-icon { opacity: 1; }
++
++.nav-icon {
++	display: flex;
++	align-items: center;
++	flex-shrink: 0;
++	opacity: 0.6;
++	transition: opacity 0.12s;
++}
++.nav-item:hover .nav-icon { opacity: 1; }
++.nav-label { flex: 1; }
++.nav-chevron {
++	margin-left: auto;
++	opacity: 0.4;
++	transition: transform 0.2s;
++	flex-shrink: 0;
++}
+ .nav-chevron.rotated { transform: rotate(180deg); }
+-.nav-children { background: rgba(0,0,0,0.15); }
++
++.nav-children {
++	margin: 2px 8px 4px;
++	border-left: 1px solid rgba(255,255,255,0.08);
++	margin-left: 27px;
++}
+ .nav-child {
+ 	display: block;
+-	padding: 8px 16px 8px 42px;
++	padding: 6px 12px;
+ 	font-size: 12.5px;
+ 	color: var(--sidebar-text);
+-	transition: color 0.15s;
++	border-radius: 6px;
++	margin: 1px 4px;
++	transition: color 0.12s, background 0.12s;
+ }
+-.nav-child:hover { color: var(--sidebar-text-active); }
+-.nav-child.active { color: #fff; font-weight: 500; }
++.nav-child:hover { color: var(--sidebar-text-active); background: var(--sidebar-hover); }
++.nav-child.active { color: #f1f5f9; font-weight: 600; }
++
++/* Footer */
+ .sidebar-footer {
+-	border-top: 1px solid rgba(255,255,255,0.06);
+-	padding: 8px 0;
++	border-top: 1px solid var(--sidebar-border);
++	padding: 8px 8px;
++	display: flex;
++	flex-direction: column;
++	gap: 2px;
++}
++.footer-link {
++	display: flex;
++	align-items: center;
++	gap: 8px;
++	padding: 7px 10px;
++	font-size: 12.5px;
++	color: var(--sidebar-text);
++	border-radius: 7px;
++	transition: background 0.12s, color 0.12s;
++	border: none;
++	background: none;
++	cursor: pointer;
++	font-family: var(--font);
++	width: 100%;
++	text-align: left;
+ }
++.footer-link:hover { background: var(--sidebar-hover); color: var(--sidebar-text-active); }
++.footer-logout:hover { color: #f87171; }
+ 
+ /* ── Content ── */
+ .admin-content {
+ 	margin-left: var(--sidebar-width);
+ 	flex: 1;
+ 	min-height: 100vh;
+-	padding: 32px;
++	padding: 36px 40px;
++	max-width: calc(100vw - var(--sidebar-width));
+ }
+ 
+ @media (max-width: 768px) {
+ 	.sidebar { display: none; }
+-	.admin-content { margin-left: 0; padding: 16px; }
++	.admin-content { margin-left: 0; padding: 16px; max-width: 100vw; }
+ }
+ </style>
+diff --git a/src/routes/admin/+page.svelte b/src/routes/admin/+page.svelte
+index d8ed568..b201dfc 100644
+--- a/src/routes/admin/+page.svelte
++++ b/src/routes/admin/+page.svelte
+@@ -6,50 +6,225 @@
+ <svelte:head><title>Dashboard — IM Admin</title></svelte:head>
+ 
+ <div class="page-header">
+-	<h1>Inicio</h1>
++	<h1>Dashboard</h1>
+ </div>
+ 
++<!-- Stats -->
+ <div class="stats-grid">
+-	<div class="card stat-card">
+-		<p class="stat-label">Ventas hoy</p>
+-		<p class="stat-value">$0</p>
++	<div class="stat-card">
++		<div class="stat-icon stat-icon-green">
++			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
++		</div>
++		<div class="stat-body">
++			<p class="stat-label">Ventas hoy</p>
++			<p class="stat-value">$0</p>
++		</div>
+ 	</div>
+-	<div class="card stat-card">
+-		<p class="stat-label">Ventas esta semana</p>
+-		<p class="stat-value">$0</p>
++
++	<div class="stat-card">
++		<div class="stat-icon stat-icon-blue">
++			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
++		</div>
++		<div class="stat-body">
++			<p class="stat-label">Ventas esta semana</p>
++			<p class="stat-value">$0</p>
++		</div>
+ 	</div>
+-	<div class="card stat-card">
+-		<p class="stat-label">Pedidos pendientes</p>
+-		<p class="stat-value">0</p>
++
++	<div class="stat-card">
++		<div class="stat-icon stat-icon-amber">
++			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
++		</div>
++		<div class="stat-body">
++			<p class="stat-label">Pedidos pendientes</p>
++			<p class="stat-value">0</p>
++		</div>
+ 	</div>
+-	<div class="card stat-card">
+-		<p class="stat-label">Productos activos</p>
+-		<p class="stat-value">{data.productCount ?? 0}</p>
++
++	<div class="stat-card">
++		<div class="stat-icon stat-icon-navy">
++			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
++		</div>
++		<div class="stat-body">
++			<p class="stat-label">Productos activos</p>
++			<p class="stat-value">{data.productCount ?? 0}</p>
++		</div>
+ 	</div>
+ </div>
+ 
++<!-- Low stock alert -->
+ {#if (data.lowStock ?? []).length > 0}
+-<div class="card" style="margin-top:24px;border-left:3px solid var(--warning);">
+-	<h3 style="font-size:13px;font-weight:600;margin-bottom:12px;color:var(--warning)">⚠ Stock bajo</h3>
+-	{#each data.lowStock as v}
+-		<p style="font-size:13px;color:var(--muted);margin-bottom:4px;">
+-			{v.product_name} · {v.color} {v.size} — <strong>{v.stock} unidad{v.stock === 1 ? '' : 'es'}</strong>
+-		</p>
+-	{/each}
++<div class="alert-card">
++	<div class="alert-header">
++		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
++		Stock bajo — {(data.lowStock ?? []).length} variante{(data.lowStock ?? []).length > 1 ? 's' : ''}
++	</div>
++	<div class="alert-list">
++		{#each data.lowStock as v}
++			<div class="alert-item">
++				<span class="alert-product">{v.product_name}</span>
++				<span class="alert-variant">{v.color} · {v.size}</span>
++				<span class="alert-stock">{v.stock} ud.</span>
++			</div>
++		{/each}
++	</div>
++	<a href="/admin/inventario" class="alert-link">Ir a inventario →</a>
+ </div>
+ {/if}
+ 
+-<div class="card" style="margin-top:24px;">
+-	<h3 style="font-size:13px;font-weight:600;margin-bottom:16px;">Últimos pedidos</h3>
+-	<p style="font-size:13px;color:var(--muted);">Sin pedidos aún.</p>
++<!-- Recent orders -->
++<div class="section-block">
++	<div class="section-block-header">
++		<h2 class="section-block-title">Últimos pedidos</h2>
++		<a href="/admin/pedidos" class="section-block-action">Ver todos →</a>
++	</div>
++	<div class="empty-state">
++		<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
++		<p>Sin pedidos aún</p>
++	</div>
+ </div>
+ 
+ <style>
+-.page-header { margin-bottom: 24px; }
+-.page-header h1 { font-size: 22px; font-weight: 600; }
+-.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+-.stat-card { }
+-.stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 8px; }
+-.stat-value { font-size: 28px; font-weight: 700; color: var(--navy); }
+-@media (max-width: 900px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
++/* Stats */
++.stats-grid {
++	display: grid;
++	grid-template-columns: repeat(4, 1fr);
++	gap: 16px;
++	margin-bottom: 28px;
++}
++.stat-card {
++	background: var(--surface);
++	border: 1px solid var(--border);
++	border-radius: var(--radius);
++	padding: 20px;
++	display: flex;
++	align-items: flex-start;
++	gap: 16px;
++	box-shadow: var(--shadow-sm);
++	transition: box-shadow 0.15s;
++}
++.stat-card:hover { box-shadow: var(--shadow-md); }
++
++.stat-icon {
++	width: 40px;
++	height: 40px;
++	border-radius: 10px;
++	display: flex;
++	align-items: center;
++	justify-content: center;
++	flex-shrink: 0;
++}
++.stat-icon-green { background: #dcfce7; color: #16a34a; }
++.stat-icon-blue  { background: #dbeafe; color: #2563eb; }
++.stat-icon-amber { background: #fef3c7; color: #d97706; }
++.stat-icon-navy  { background: #e0e7ff; color: #3730a3; }
++
++.stat-body { flex: 1; min-width: 0; }
++.stat-label {
++	font-size: 11.5px;
++	font-weight: 600;
++	text-transform: uppercase;
++	letter-spacing: 0.06em;
++	color: var(--muted);
++	margin-bottom: 6px;
++}
++.stat-value {
++	font-size: 26px;
++	font-weight: 700;
++	color: var(--text);
++	letter-spacing: -0.03em;
++	line-height: 1;
++}
++
++/* Alert card */
++.alert-card {
++	background: #fffbeb;
++	border: 1px solid #fde68a;
++	border-radius: var(--radius);
++	padding: 18px 20px;
++	margin-bottom: 24px;
++}
++.alert-header {
++	display: flex;
++	align-items: center;
++	gap: 8px;
++	font-size: 13px;
++	font-weight: 600;
++	color: #92400e;
++	margin-bottom: 12px;
++}
++.alert-list {
++	display: flex;
++	flex-direction: column;
++	gap: 6px;
++	margin-bottom: 14px;
++}
++.alert-item {
++	display: flex;
++	align-items: center;
++	gap: 10px;
++	font-size: 12.5px;
++}
++.alert-product { font-weight: 600; color: #78350f; }
++.alert-variant { color: #92400e; }
++.alert-stock {
++	margin-left: auto;
++	background: #fde68a;
++	color: #78350f;
++	padding: 2px 8px;
++	border-radius: 12px;
++	font-size: 11.5px;
++	font-weight: 700;
++}
++.alert-link {
++	font-size: 12.5px;
++	font-weight: 600;
++	color: #92400e;
++	text-decoration: underline;
++	text-underline-offset: 3px;
++}
++
++/* Section block */
++.section-block {
++	background: var(--surface);
++	border: 1px solid var(--border);
++	border-radius: var(--radius);
++	overflow: hidden;
++	box-shadow: var(--shadow-sm);
++}
++.section-block-header {
++	display: flex;
++	align-items: center;
++	justify-content: space-between;
++	padding: 18px 20px;
++	border-bottom: 1px solid var(--border);
++}
++.section-block-title {
++	font-size: 14px;
++	font-weight: 600;
++	color: var(--text);
++}
++.section-block-action {
++	font-size: 12.5px;
++	color: var(--muted);
++	transition: color 0.15s;
++}
++.section-block-action:hover { color: var(--text); }
++
++.empty-state {
++	display: flex;
++	flex-direction: column;
++	align-items: center;
++	justify-content: center;
++	gap: 12px;
++	padding: 48px 24px;
++	color: var(--muted);
++}
++.empty-state p {
++	font-size: 13px;
++}
++
++@media (max-width: 900px) {
++	.stats-grid { grid-template-columns: repeat(2, 1fr); }
++}
+ </style>
+diff --git a/src/routes/admin/productos/+page.svelte b/src/routes/admin/productos/+page.svelte
+index f24405d..92107f7 100644
+--- a/src/routes/admin/productos/+page.svelte
++++ b/src/routes/admin/productos/+page.svelte
+@@ -34,7 +34,7 @@
+ 			</thead>
+ 			<tbody>
+ 				{#each data.products as p}
+-					<tr>
++					<tr onclick={() => window.location.href = `/admin/productos/${p.id}`} style="cursor:pointer;">
+ 						<td>
+ 							<div style="display:flex;align-items:center;gap:12px;">
+ 								{#if p.image}
+@@ -51,7 +51,7 @@
+ 						<td><span class="status-badge status-{p.status}">{p.status === 'available' ? 'Disponible' : p.status === 'draft' ? 'Borrador' : 'Agotado'}</span></td>
+ 						<td>{clp(p.price)}</td>
+ 						<td style="color:{p.totalStock === 0 ? 'var(--danger)' : p.totalStock <= 3 ? 'var(--warning)' : 'inherit'}">{p.totalStock}</td>
+-						<td>
++						<td onclick={(e) => e.stopPropagation()}>
+ 							<div style="display:flex;gap:8px;">
+ 								<a href="/admin/productos/{p.id}" class="btn btn-ghost" style="padding:6px 12px;">Editar</a>
+ 								<form method="POST" action="?/delete" use:enhance>
+diff --git a/src/routes/admin/productos/[id]/+page.server.ts b/src/routes/admin/productos/[id]/+page.server.ts
+index 01bab67..ef0f9ea 100644
+--- a/src/routes/admin/productos/[id]/+page.server.ts
++++ b/src/routes/admin/productos/[id]/+page.server.ts
+@@ -28,18 +28,19 @@ export const actions: Actions = {
+ 		const sku = (form.get('sku') as string)?.trim() || null;
+ 		const status = form.get('status') as string ?? 'draft';
+ 		const featured = form.get('featured') === 'on';
++		const slug = (form.get('slug') as string)?.trim() || null;
++		const meta_description = (form.get('meta_description') as string)?.trim() || null;
+ 
+ 		if (!name) return fail(400, { error: 'El nombre es requerido.' });
+ 		if (!price || isNaN(price)) return fail(400, { error: 'El precio es requerido.' });
+ 
+ 		const { error: err } = await locals.supabase
+ 			.from('products')
+-			.update({ name, subtitle, description, category_id, price, compare_price, cost, sku, status, featured, updated_at: new Date().toISOString() })
++			.update({ name, subtitle, description, category_id, price, compare_price, cost, sku, status, featured, slug, meta_description, updated_at: new Date().toISOString() })
+ 			.eq('id', params.id);
+ 
+ 		if (err) return fail(500, { error: 'Error al guardar.' });
+ 
+-		// Reemplazar variantes
+ 		await locals.supabase.from('product_variants').delete().eq('product_id', params.id);
+ 
+ 		const variantsRaw: Record<string, Record<string, string>> = {};
+@@ -62,6 +63,21 @@ export const actions: Actions = {
+ 		throw redirect(303, '/admin/productos');
+ 	},
+ 
++	create_category: async ({ request, locals }) => {
++		const form = await request.formData();
++		const name = (form.get('name') as string)?.trim();
++		if (!name) return fail(400, { error: 'El nombre es requerido.' });
++
++		const { data: category, error: err } = await locals.supabase
++			.from('categories')
++			.insert({ name, slug: name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') })
++			.select('id, name, parent_id')
++			.single();
++
++		if (err) return fail(500, { error: 'Error al crear la categoría.' });
++		return { category };
++	},
++
+ 	upload_image: async ({ request, params, locals }) => {
+ 		const form = await request.formData();
+ 		const files = form.getAll('files') as File[];
+@@ -80,7 +96,7 @@ export const actions: Actions = {
+ 		let nextPosition = (lastImg?.position ?? -1) + 1;
+ 
+ 		for (const file of validFiles) {
+-			if (file.size > 5 * 1024 * 1024) continue; // skip >5MB silently
++			if (file.size > 5 * 1024 * 1024) continue;
+ 
+ 			const ext = file.name.split('.').pop();
+ 			const path = `products/${params.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+diff --git a/src/routes/admin/productos/[id]/+page.svelte b/src/routes/admin/productos/[id]/+page.svelte
+index bac301b..174e582 100644
+--- a/src/routes/admin/productos/[id]/+page.svelte
++++ b/src/routes/admin/productos/[id]/+page.svelte
+@@ -1,6 +1,7 @@
+ <script lang="ts">
+ 	import { enhance } from '$app/forms';
+ 	import type { PageData, ActionData } from './$types';
++	import RichTextEditor from '$lib/components/RichTextEditor.svelte';
+ 
+ 	let { data, form }: { data: PageData; form: ActionData } = $props();
+ 
+@@ -18,6 +19,7 @@
+ 	function removeVariant(i: number) { variants = variants.filter((_, idx) => idx !== i); }
+ 
+ 	let uploading = $state(false);
++	let preview = $state<string | null>(null);
+ 	let images = $state([...data.images].sort((a, b) => a.position - b.position));
+ 	let sortedImages = $derived(images);
+ 	let dragIdx = $state<number | null>(null);
+@@ -32,9 +34,11 @@
+ 		images = reordered;
+ 		dragIdx = i;
+ 	}
+-	function onDragEnd() {
+-		dragIdx = null;
+-		saveOrder();
++	function onDragEnd() { dragIdx = null; saveOrder(); }
++
++	function onFileChange(e: Event) {
++		const input = e.target as HTMLInputElement;
++		if (input.files?.length) input.form?.requestSubmit();
+ 	}
+ 
+ 	async function saveOrder() {
+@@ -43,6 +47,46 @@
+ 		fd.append('order', order);
+ 		await fetch('?/reorder_images', { method: 'POST', body: fd });
+ 	}
++
++	// Categorías inline
++	let categories = $state([...data.categories]);
++	let selectedCategoryId = $state(data.product.category_id ?? '');
++	let showCategoryModal = $state(false);
++	let newCategoryName = $state('');
++
++	function handleCategoryCreate() {
++		return async ({ result, update }: any) => {
++			if (result.type === 'success' && result.data?.category) {
++				categories = [...categories, result.data.category];
++				selectedCategoryId = result.data.category.id;
++			}
++			showCategoryModal = false;
++			newCategoryName = '';
++			await update({ reset: true, invalidateAll: false });
++		};
++	}
++
++	// SEO
++	function slugify(text: string) {
++		return text.toLowerCase()
++			.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
++			.replace(/[^a-z0-9\s-]/g, '')
++			.trim().replace(/\s+/g, '-');
++	}
++
++	let slug = $state(data.product.slug ?? slugify(data.product.name));
++	let metaDesc = $state(data.product.meta_description ?? '');
++	let slugTouched = $state(!!data.product.slug);
++	let slugDisplay = $derived(slug || 'mi-producto');
++
++	function onNameInput(e: Event) {
++		const val = (e.target as HTMLInputElement).value;
++		if (!slugTouched) slug = slugify(val);
++	}
++	function onSlugInput(e: Event) {
++		slugTouched = true;
++		slug = slugify((e.target as HTMLInputElement).value);
++	}
+ </script>
+ 
+ <svelte:head><title>{data.product.name} — IM Admin</title></svelte:head>
+@@ -64,20 +108,19 @@
+ 	<!-- Columna principal -->
+ 	<div class="form-main">
+ 
+-		<!-- Info básica — dentro del form principal -->
+ 		<form id="product-form" method="POST" action="?/update">
+ 			<div class="card">
+ 				<div class="form-group">
+ 					<label class="form-label" for="name">Nombre *</label>
+-					<input id="name" name="name" type="text" class="form-input" value={data.product.name} required />
++					<input id="name" name="name" type="text" class="form-input" value={data.product.name} required oninput={onNameInput} />
+ 				</div>
+ 				<div class="form-group">
+ 					<label class="form-label" for="subtitle">Subtítulo</label>
+ 					<input id="subtitle" name="subtitle" type="text" class="form-input" value={data.product.subtitle ?? ''} />
+ 				</div>
+ 				<div class="form-group" style="margin-bottom:0;">
+-					<label class="form-label" for="description">Descripción</label>
+-					<textarea id="description" name="description" class="form-textarea">{data.product.description ?? ''}</textarea>
++					<label class="form-label">Descripción</label>
++					<RichTextEditor name="description" value={data.product.description ?? ''} />
+ 				</div>
+ 			</div>
+ 
+@@ -129,9 +172,33 @@
+ 					<input name="sku" type="text" class="form-input" value={data.product.sku ?? ''} />
+ 				</div>
+ 			</div>
++
++			<!-- SEO -->
++			<div class="card" style="margin-top:16px;">
++				<h3 class="section-title">SEO</h3>
++				<div class="form-group">
++					<label class="form-label">URL (slug)</label>
++					<div class="slug-row">
++						<span class="slug-prefix">shop.imsportswear.cl/productos/</span>
++						<input name="slug" type="text" class="form-input" value={slug} oninput={onSlugInput} placeholder="mi-producto" style="border-left:none;border-radius:0 6px 6px 0;" />
++					</div>
++				</div>
++				<div class="form-group">
++					<label class="form-label">
++						Meta descripción
++						<span style="color:var(--muted);font-weight:400;margin-left:6px;">{metaDesc.length}/155</span>
++					</label>
++					<textarea name="meta_description" class="form-textarea" style="height:72px;" maxlength="155" bind:value={metaDesc}></textarea>
++				</div>
++				<div class="seo-preview">
++					<div class="seo-title">{data.product.name} — IM Sportswear</div>
++					<div class="seo-url">shop.imsportswear.cl/productos/{slugDisplay}</div>
++					<div class="seo-desc">{metaDesc || 'Agrega una meta descripción para mejorar el posicionamiento en Google.'}</div>
++				</div>
++			</div>
+ 		</form>
+ 
+-		<!-- Fotos — forms independientes, fuera del form principal -->
++		<!-- Fotos — fuera del form principal -->
+ 		<div class="card" style="margin-top:16px;">
+ 			<h3 class="section-title">Fotos del producto</h3>
+ 			<div class="images-grid">
+@@ -148,7 +215,7 @@
+ 						{#if i === 0}
+ 							<span class="img-primary-badge">Principal</span>
+ 						{/if}
+-						<img src={img.url} alt={data.product.name} />
++						<img src={img.url} alt={data.product.name} onclick={() => preview = img.url} style="cursor:zoom-in;" />
+ 						<div class="img-actions">
+ 							{#if i !== 0}
+ 								<button
+@@ -165,39 +232,34 @@
+ 						</div>
+ 					</div>
+ 				{/each}
++			</div>
+ 
++			<div class="img-upload-row">
+ 				<form
+ 					method="POST"
+ 					action="?/upload_image"
+ 					enctype="multipart/form-data"
+ 					use:enhance={() => {
+ 						uploading = true;
+-						return async ({ update }) => {
+-							uploading = false;
+-							await update({ reset: false });
+-						};
++						return async ({ update }) => { uploading = false; await update({ reset: false }); };
+ 					}}
+ 				>
+-					<label class="img-upload">
++					<label class="img-upload-btn">
+ 						{#if uploading}
+-							<span style="font-size:12px;color:var(--muted);">Subiendo...</span>
++							<span>Subiendo...</span>
+ 						{:else}
+-							<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+-							<span style="font-size:12px;color:var(--muted);margin-top:4px;">Subir fotos</span>
+-							<span style="font-size:10px;color:var(--muted);">Múltiple · Max 5MB</span>
++							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
++							Subir fotos
+ 						{/if}
+-						<input
+-							type="file" name="files" accept="image/*" multiple style="display:none;"
+-							onchange={(e) => { if ((e.target as HTMLInputElement).files?.length) (e.target as HTMLInputElement).form?.requestSubmit(); }}
+-						/>
++						<input type="file" name="files" accept="image/*" multiple style="display:none;" onchange={onFileChange} />
+ 					</label>
+ 				</form>
++				<p style="font-size:11px;color:var(--muted);">Arrastra para reordenar · Primera foto = principal · Max 5MB</p>
+ 			</div>
+-			<p style="font-size:11px;color:var(--muted);margin-top:8px;">La primera foto es la principal · Proporción 3:4 recomendada · Max 5MB por foto.</p>
+ 		</div>
+ 	</div>
+ 
+-	<!-- Sidebar — usa form attribute para asociarse al form principal -->
++	<!-- Sidebar -->
+ 	<div class="form-sidebar">
+ 		<div class="card">
+ 			<h3 class="section-title">Estado</h3>
+@@ -216,13 +278,17 @@
+ 		</div>
+ 
+ 		<div class="card" style="margin-top:16px;">
+-			<h3 class="section-title">Categoría</h3>
+-			<select name="category_id" form="product-form" class="form-select">
++			<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
++				<h3 class="section-title" style="margin:0;">Categoría</h3>
++				<button type="button" class="btn btn-ghost" style="padding:4px 10px;font-size:12px;" onclick={() => showCategoryModal = true}>+ Nueva</button>
++			</div>
++			<input type="hidden" name="category_id" form="product-form" value={selectedCategoryId} />
++			<select class="form-select" bind:value={selectedCategoryId}>
+ 				<option value="">Sin categoría</option>
+-				{#each data.categories.filter((c: any) => !c.parent_id) as cat}
+-					<option value={cat.id} selected={data.product.category_id === cat.id}>{cat.name}</option>
+-					{#each data.categories.filter((c: any) => c.parent_id === cat.id) as sub}
+-						<option value={sub.id} selected={data.product.category_id === sub.id}>  └ {sub.name}</option>
++				{#each categories.filter((c: any) => !c.parent_id) as cat}
++					<option value={cat.id}>{cat.name}</option>
++					{#each categories.filter((c: any) => c.parent_id === cat.id) as sub}
++						<option value={sub.id}>  └ {sub.name}</option>
+ 					{/each}
+ 				{/each}
+ 			</select>
+@@ -230,6 +296,36 @@
+ 	</div>
+ </div>
+ 
++<!-- Modal nueva categoría -->
++{#if showCategoryModal}
++	<div class="modal-overlay" onclick={() => showCategoryModal = false} role="dialog">
++		<div class="modal" onclick={(e) => e.stopPropagation()}>
++			<div class="modal-header">
++				<h3>Nueva categoría</h3>
++				<button type="button" class="modal-close" onclick={() => showCategoryModal = false}>×</button>
++			</div>
++			<form method="POST" action="?/create_category" use:enhance={handleCategoryCreate}>
++				<div class="modal-body">
++					<label class="form-label">Nombre *</label>
++					<input name="name" type="text" class="form-input" bind:value={newCategoryName} required autofocus placeholder="ej: Accesorios" />
++				</div>
++				<div class="modal-footer">
++					<button type="button" class="btn btn-ghost" onclick={() => showCategoryModal = false}>Cancelar</button>
++					<button type="submit" class="btn btn-primary">Crear categoría</button>
++				</div>
++			</form>
++		</div>
++	</div>
++{/if}
++
++<!-- Lightbox -->
++{#if preview}
++	<div class="lightbox" onclick={() => preview = null} role="dialog" aria-modal="true">
++		<button class="lightbox-close" onclick={() => preview = null}>×</button>
++		<img src={preview} alt="Preview" onclick={(e) => e.stopPropagation()} />
++	</div>
++{/if}
++
+ <style>
+ .page-header { display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:24px; }
+ .page-header h1 { font-size:22px; font-weight:600; }
+@@ -240,17 +336,38 @@
+ .variants-header { display:grid; grid-template-columns:1fr 1fr 100px 32px; gap:8px; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:8px; }
+ .variant-row { display:grid; grid-template-columns:1fr 1fr 100px 32px; gap:8px; margin-bottom:8px; align-items:center; }
+ .checkbox-label { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; margin-top:12px; }
+-.images-grid { display:flex; flex-wrap:wrap; gap:12px; }
+-.img-item { position:relative; width:100px; height:133px; }
++/* Fotos */
++.images-grid { display:flex; flex-wrap:wrap; gap:20px; }
++.img-item { position:relative; width:130px; height:173px; cursor:grab; }
+ .img-item img { width:100%; height:100%; object-fit:cover; border-radius:6px; border:1px solid var(--border); }
+-.img-delete { position:absolute; top:-8px; right:-8px; width:22px; height:22px; border-radius:50%; background:var(--danger); color:#fff; border:none; cursor:pointer; font-size:14px; line-height:1; }
+-.img-upload { width:100px; height:133px; border:2px dashed var(--border); border-radius:6px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; transition:border-color 0.15s; }
+-.img-upload:hover { border-color:var(--navy); }
+-.img-item { cursor: grab; }
+ .img-item.dragging { opacity:0.4; cursor:grabbing; }
+ .img-primary-badge { position:absolute; top:6px; left:6px; background:var(--navy); color:#fff; font-size:9px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; padding:2px 6px; border-radius:3px; z-index:1; }
+ .img-actions { position:absolute; bottom:6px; right:6px; display:flex; gap:4px; }
+ .img-action-btn { width:22px; height:22px; border-radius:50%; background:rgba(255,255,255,0.9); color:#b45309; border:none; cursor:pointer; font-size:13px; display:flex; align-items:center; justify-content:center; }
+ .img-action-btn:hover { background:#fff; }
++.img-delete { position:absolute; top:-8px; right:-8px; width:22px; height:22px; border-radius:50%; background:var(--danger); color:#fff; border:none; cursor:pointer; font-size:14px; line-height:1; }
++.img-upload-row { display:flex; align-items:center; gap:16px; margin-top:16px; padding-top:16px; border-top:1px solid var(--border); }
++.img-upload-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-weight:500; cursor:pointer; color:var(--text); background:#fff; transition:border-color 0.15s; }
++.img-upload-btn:hover { border-color:var(--navy); color:var(--navy); }
++/* SEO */
++.slug-row { display:flex; align-items:center; }
++.slug-prefix { background:var(--bg); border:1px solid var(--border); border-right:none; border-radius:6px 0 0 6px; padding:0 10px; height:36px; display:flex; align-items:center; font-size:12px; color:var(--muted); white-space:nowrap; flex-shrink:0; }
++.seo-preview { border:1px solid var(--border); border-radius:6px; padding:12px; margin-top:8px; background:#fff; }
++.seo-title { font-size:14px; color:#1a0dab; font-weight:500; margin-bottom:2px; }
++.seo-url { font-size:12px; color:#006621; margin-bottom:4px; }
++.seo-desc { font-size:12px; color:#545454; line-height:1.5; }
++/* Modal */
++.modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:flex; align-items:center; justify-content:center; }
++.modal { background:#fff; border-radius:10px; width:420px; max-width:90vw; box-shadow:0 20px 60px rgba(0,0,0,0.2); }
++.modal-header { display:flex; align-items:center; justify-content:space-between; padding:20px 24px 0; }
++.modal-header h3 { font-size:16px; font-weight:600; }
++.modal-close { background:none; border:none; font-size:24px; cursor:pointer; color:var(--muted); line-height:1; padding:0 4px; }
++.modal-body { padding:16px 24px; }
++.modal-footer { display:flex; justify-content:flex-end; gap:8px; padding:16px 24px; border-top:1px solid var(--border); }
++/* Lightbox */
++.lightbox { position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:1000; display:flex; align-items:center; justify-content:center; cursor:zoom-out; }
++.lightbox img { max-width:90vw; max-height:90vh; object-fit:contain; border-radius:6px; cursor:default; box-shadow:0 8px 40px rgba(0,0,0,0.5); }
++.lightbox-close { position:fixed; top:20px; right:24px; background:none; border:none; color:#fff; font-size:32px; line-height:1; cursor:pointer; opacity:0.8; }
++.lightbox-close:hover { opacity:1; }
+ @media (max-width:900px) { .form-layout { grid-template-columns:1fr; } .price-grid { grid-template-columns:1fr 1fr; } }
+ </style>
+diff --git a/src/routes/admin/productos/nuevo/+page.server.ts b/src/routes/admin/productos/nuevo/+page.server.ts
+index 8e8f33e..239e5bb 100644
+--- a/src/routes/admin/productos/nuevo/+page.server.ts
++++ b/src/routes/admin/productos/nuevo/+page.server.ts
+@@ -23,19 +23,20 @@ export const actions: Actions = {
+ 		const sku = (form.get('sku') as string)?.trim() || null;
+ 		const status = form.get('status') as string ?? 'draft';
+ 		const featured = form.get('featured') === 'on';
++		const slug = (form.get('slug') as string)?.trim() || null;
++		const meta_description = (form.get('meta_description') as string)?.trim() || null;
+ 
+ 		if (!name) return fail(400, { error: 'El nombre es requerido.' });
+ 		if (!price || isNaN(price)) return fail(400, { error: 'El precio es requerido.' });
+ 
+ 		const { data: product, error } = await locals.supabase
+ 			.from('products')
+-			.insert({ name, subtitle, description, category_id, price, compare_price, cost, sku, status, featured })
++			.insert({ name, subtitle, description, category_id, price, compare_price, cost, sku, status, featured, slug, meta_description })
+ 			.select()
+ 			.single();
+ 
+ 		if (error) return fail(500, { error: 'Error al crear el producto.' });
+ 
+-		// Procesar variantes (formato: variants[0][color], variants[0][size], variants[0][stock])
+ 		const variantsRaw: Record<string, Record<string, string>> = {};
+ 		for (const [key, value] of form.entries()) {
+ 			const match = key.match(/^variants\[(\d+)\]\[(\w+)\]$/);
+@@ -55,5 +56,20 @@ export const actions: Actions = {
+ 		}
+ 
+ 		throw redirect(303, '/admin/productos');
++	},
++
++	create_category: async ({ request, locals }) => {
++		const form = await request.formData();
++		const name = (form.get('name') as string)?.trim();
++		if (!name) return fail(400, { error: 'El nombre es requerido.' });
++
++		const { data: category, error } = await locals.supabase
++			.from('categories')
++			.insert({ name, slug: name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') })
++			.select('id, name, parent_id')
++			.single();
++
++		if (error) return fail(500, { error: 'Error al crear la categoría.' });
++		return { category };
+ 	}
+ };
+diff --git a/src/routes/admin/productos/nuevo/+page.svelte b/src/routes/admin/productos/nuevo/+page.svelte
+index ebc4ebe..e2539d6 100644
+--- a/src/routes/admin/productos/nuevo/+page.svelte
++++ b/src/routes/admin/productos/nuevo/+page.svelte
+@@ -1,6 +1,7 @@
+ <script lang="ts">
+ 	import { enhance } from '$app/forms';
+ 	import type { PageData, ActionData } from './$types';
++	import RichTextEditor from '$lib/components/RichTextEditor.svelte';
+ 
+ 	let { data, form }: { data: PageData; form: ActionData } = $props();
+ 
+@@ -10,11 +11,49 @@
+ 	type Variant = { color: string; size: string; stock: number };
+ 	let variants: Variant[] = $state([{ color: 'Negro', size: 'M', stock: 0 }]);
+ 
+-	function addVariant() {
+-		variants = [...variants, { color: 'Negro', size: 'M', stock: 0 }];
++	function addVariant() { variants = [...variants, { color: 'Negro', size: 'M', stock: 0 }]; }
++	function removeVariant(i: number) { variants = variants.filter((_, idx) => idx !== i); }
++
++	// Categorías — copia local para actualizar sin reload
++	let categories = $state([...data.categories]);
++	let selectedCategoryId = $state('');
++	let showCategoryModal = $state(false);
++	let newCategoryName = $state('');
++
++	function handleCategoryCreate() {
++		return async ({ result, update }: any) => {
++			if (result.type === 'success' && result.data?.category) {
++				categories = [...categories, result.data.category];
++				selectedCategoryId = result.data.category.id;
++			}
++			showCategoryModal = false;
++			newCategoryName = '';
++			await update({ reset: true, invalidateAll: false });
++		};
++	}
++
++	// SEO
++	let productName = $state('');
++	let slug = $state('');
++	let metaDesc = $state('');
++	let slugTouched = $state(false);
++	let slugDisplay = $derived(slug || 'mi-producto');
++
++	function slugify(text: string) {
++		return text.toLowerCase()
++			.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
++			.replace(/[^a-z0-9\s-]/g, '')
++			.trim().replace(/\s+/g, '-');
++	}
++
++	function onNameInput(e: Event) {
++		productName = (e.target as HTMLInputElement).value;
++		if (!slugTouched) slug = slugify(productName);
+ 	}
+-	function removeVariant(i: number) {
+-		variants = variants.filter((_, idx) => idx !== i);
++
++	function onSlugInput(e: Event) {
++		slugTouched = true;
++		slug = slugify((e.target as HTMLInputElement).value);
+ 	}
+ </script>
+ 
+@@ -40,15 +79,15 @@
+ 			<div class="card">
+ 				<div class="form-group">
+ 					<label class="form-label" for="name">Nombre *</label>
+-					<input id="name" name="name" type="text" class="form-input" required />
++					<input id="name" name="name" type="text" class="form-input" required oninput={onNameInput} />
+ 				</div>
+ 				<div class="form-group">
+ 					<label class="form-label" for="subtitle">Subtítulo <span style="color:var(--muted);font-weight:400;">(ej: Tenis · Dryfit)</span></label>
+ 					<input id="subtitle" name="subtitle" type="text" class="form-input" />
+ 				</div>
+ 				<div class="form-group" style="margin-bottom:0;">
+-					<label class="form-label" for="description">Descripción</label>
+-					<textarea id="description" name="description" class="form-textarea"></textarea>
++					<label class="form-label">Descripción</label>
++					<RichTextEditor name="description" />
+ 				</div>
+ 			</div>
+ 
+@@ -75,12 +114,9 @@
+ 			<div class="card" style="margin-top:16px;">
+ 				<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+ 					<h3 class="section-title" style="margin:0;">Variantes</h3>
+-					<button type="button" class="btn btn-ghost" onclick={addVariant} style="padding:6px 12px;font-size:12px;">+ Agregar variante</button>
+-				</div>
+-
+-				<div class="variants-header">
+-					<span>Color</span><span>Talla</span><span>Stock</span><span></span>
++					<button type="button" class="btn btn-ghost" onclick={addVariant} style="padding:6px 12px;font-size:12px;">+ Agregar</button>
+ 				</div>
++				<div class="variants-header"><span>Color</span><span>Talla</span><span>Stock</span><span></span></div>
+ 				{#each variants as v, i}
+ 					<div class="variant-row">
+ 						<select name="variants[{i}][color]" class="form-select" bind:value={v.color}>
+@@ -99,19 +135,43 @@
+ 			<div class="card" style="margin-top:16px;">
+ 				<h3 class="section-title">Propiedades</h3>
+ 				<div class="form-group" style="margin-bottom:0;">
+-					<label class="form-label" for="sku">SKU</label>
+-					<input id="sku" name="sku" type="text" class="form-input" placeholder="ej: TT-MUJ-NEG-M" />
++					<label class="form-label">SKU</label>
++					<input name="sku" type="text" class="form-input" placeholder="ej: TT-MUJ-NEG-M" />
++				</div>
++			</div>
++
++			<!-- SEO -->
++			<div class="card" style="margin-top:16px;">
++				<h3 class="section-title">SEO</h3>
++				<div class="form-group">
++					<label class="form-label">URL (slug)</label>
++					<div class="slug-row">
++						<span class="slug-prefix">shop.imsportswear.cl/productos/</span>
++						<input name="slug" type="text" class="form-input" value={slug} oninput={onSlugInput} placeholder="mi-producto" style="border-left:none;border-radius:0 6px 6px 0;" />
++					</div>
++				</div>
++				<div class="form-group">
++					<label class="form-label">
++						Meta descripción
++						<span style="color:var(--muted);font-weight:400;margin-left:6px;">{metaDesc.length}/155</span>
++					</label>
++					<textarea name="meta_description" class="form-textarea" style="height:72px;" maxlength="155" bind:value={metaDesc}></textarea>
++				</div>
++				<div class="seo-preview">
++					<div class="seo-title">{productName || 'Nombre del producto'} — IM Sportswear</div>
++					<div class="seo-url">shop.imsportswear.cl/productos/{slugDisplay}</div>
++					<div class="seo-desc">{metaDesc || 'Agrega una meta descripción para mejorar el posicionamiento en Google.'}</div>
+ 				</div>
+ 			</div>
+ 		</div>
+ 
+-		<!-- Sidebar derecho -->
++		<!-- Sidebar -->
+ 		<div class="form-sidebar">
+ 			<div class="card">
+ 				<h3 class="section-title">Estado</h3>
+ 				<div class="form-group">
+-					<label class="form-label" for="status">Visibilidad</label>
+-					<select id="status" name="status" class="form-select">
++					<label class="form-label">Visibilidad</label>
++					<select name="status" class="form-select">
+ 						<option value="draft">Borrador</option>
+ 						<option value="available">Disponible</option>
+ 					</select>
+@@ -123,39 +183,75 @@
+ 			</div>
+ 
+ 			<div class="card" style="margin-top:16px;">
+-				<h3 class="section-title">Categoría</h3>
+-				<select name="category_id" class="form-select">
++				<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
++					<h3 class="section-title" style="margin:0;">Categoría</h3>
++					<button type="button" class="btn btn-ghost" style="padding:4px 10px;font-size:12px;" onclick={() => showCategoryModal = true}>+ Nueva</button>
++				</div>
++				<input type="hidden" name="category_id" value={selectedCategoryId} />
++				<select class="form-select" bind:value={selectedCategoryId}>
+ 					<option value="">Sin categoría</option>
+-					{#each data.categories.filter((c: any) => !c.parent_id) as cat}
++					{#each categories.filter((c: any) => !c.parent_id) as cat}
+ 						<option value={cat.id}>{cat.name}</option>
+-						{#each data.categories.filter((c: any) => c.parent_id === cat.id) as sub}
++						{#each categories.filter((c: any) => c.parent_id === cat.id) as sub}
+ 							<option value={sub.id}>  └ {sub.name}</option>
+ 						{/each}
+ 					{/each}
+ 				</select>
+ 			</div>
++		</div>
++	</div>
++</form>
+ 
+-			<div class="card" style="margin-top:16px;">
+-				<h3 class="section-title">Imagen</h3>
+-				<p style="font-size:12px;color:var(--muted);">Upload de fotos disponible en la siguiente versión.</p>
++<!-- Modal nueva categoría -->
++{#if showCategoryModal}
++	<div class="modal-overlay" onclick={() => showCategoryModal = false} role="dialog">
++		<div class="modal" onclick={(e) => e.stopPropagation()}>
++			<div class="modal-header">
++				<h3>Nueva categoría</h3>
++				<button type="button" class="modal-close" onclick={() => showCategoryModal = false}>×</button>
+ 			</div>
++			<form
++				method="POST"
++				action="?/create_category"
++				use:enhance={handleCategoryCreate}
++			>
++				<div class="modal-body">
++					<label class="form-label">Nombre *</label>
++					<input name="name" type="text" class="form-input" bind:value={newCategoryName} required autofocus placeholder="ej: Accesorios" />
++				</div>
++				<div class="modal-footer">
++					<button type="button" class="btn btn-ghost" onclick={() => showCategoryModal = false}>Cancelar</button>
++					<button type="submit" class="btn btn-primary">Crear categoría</button>
++				</div>
++			</form>
+ 		</div>
+ 	</div>
+-</form>
++{/if}
+ 
+ <style>
+ .page-header { display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:24px; }
+ .page-header h1 { font-size:22px; font-weight:600; }
+ .error-banner { background:#fee2e2; color:var(--danger); padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:13px; }
+-.section-title { font-size:13px; font-weight:600; margin-bottom:16px; color:var(--text); }
+-.form-layout { display:grid; grid-template-columns: 1fr 300px; gap:20px; align-items:start; }
+-.price-grid { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:12px; }
++.section-title { font-size:13px; font-weight:600; margin-bottom:16px; }
++.form-layout { display:grid; grid-template-columns:1fr 300px; gap:20px; align-items:start; }
++.price-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+ .variants-header { display:grid; grid-template-columns:1fr 1fr 100px 32px; gap:8px; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:8px; }
+ .variant-row { display:grid; grid-template-columns:1fr 1fr 100px 32px; gap:8px; margin-bottom:8px; align-items:center; }
+-.checkbox-label { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
+-.checkbox-label input { width:14px; height:14px; }
+-@media (max-width: 900px) {
+-	.form-layout { grid-template-columns: 1fr; }
+-	.price-grid { grid-template-columns: 1fr 1fr; }
+-}
++.checkbox-label { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; margin-top:12px; }
++/* SEO */
++.slug-row { display:flex; align-items:center; }
++.slug-prefix { background:var(--bg); border:1px solid var(--border); border-right:none; border-radius:6px 0 0 6px; padding:0 10px; height:36px; display:flex; align-items:center; font-size:12px; color:var(--muted); white-space:nowrap; flex-shrink:0; }
++.seo-preview { border:1px solid var(--border); border-radius:6px; padding:12px; margin-top:8px; background:#fff; }
++.seo-title { font-size:14px; color:#1a0dab; font-weight:500; margin-bottom:2px; }
++.seo-url { font-size:12px; color:#006621; margin-bottom:4px; }
++.seo-desc { font-size:12px; color:#545454; line-height:1.5; }
++/* Modal */
++.modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:flex; align-items:center; justify-content:center; }
++.modal { background:#fff; border-radius:10px; width:420px; max-width:90vw; box-shadow:0 20px 60px rgba(0,0,0,0.2); }
++.modal-header { display:flex; align-items:center; justify-content:space-between; padding:20px 24px 0; }
++.modal-header h3 { font-size:16px; font-weight:600; }
++.modal-close { background:none; border:none; font-size:24px; cursor:pointer; color:var(--muted); line-height:1; padding:0 4px; }
++.modal-body { padding:16px 24px; }
++.modal-footer { display:flex; justify-content:flex-end; gap:8px; padding:16px 24px; border-top:1px solid var(--border); }
++@media (max-width:900px) { .form-layout { grid-template-columns:1fr; } .price-grid { grid-template-columns:1fr 1fr; } }
+ </style>
+On branch feature/admin-core
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   CLAUDE.md
+	modified:   CONSTITUTION.md
+	modified:   package-lock.json
+	modified:   package.json
+	modified:   src/app.css
+	modified:   src/app.html
+	modified:   src/lib/server/supabase.ts
+	modified:   src/routes/+page.svelte
+	modified:   src/routes/admin/+layout.svelte
+	modified:   src/routes/admin/+page.svelte
+	modified:   src/routes/admin/productos/+page.svelte
+	modified:   src/routes/admin/productos/[id]/+page.server.ts
+	modified:   src/routes/admin/productos/[id]/+page.svelte
+	modified:   src/routes/admin/productos/nuevo/+page.server.ts
+	modified:   src/routes/admin/productos/nuevo/+page.svelte
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	checkpoint.diff
+	src/lib/cart.svelte.ts
+	src/lib/components/
+	src/lib/server/email.ts
+	src/routes/+page.server.ts
+	src/routes/admin/categorias/
+	src/routes/admin/configuracion/
+	src/routes/admin/inventario/
+	src/routes/admin/pedidos/
+	src/routes/api/
+	src/routes/checkout/
+	src/routes/productos/
+	supabase/
+
+no changes added to commit (use "git add" and/or "git commit -a")

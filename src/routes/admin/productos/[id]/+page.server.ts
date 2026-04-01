@@ -28,18 +28,19 @@ export const actions: Actions = {
 		const sku = (form.get('sku') as string)?.trim() || null;
 		const status = form.get('status') as string ?? 'draft';
 		const featured = form.get('featured') === 'on';
+		const slug = (form.get('slug') as string)?.trim() || null;
+		const meta_description = (form.get('meta_description') as string)?.trim() || null;
 
 		if (!name) return fail(400, { error: 'El nombre es requerido.' });
 		if (!price || isNaN(price)) return fail(400, { error: 'El precio es requerido.' });
 
 		const { error: err } = await locals.supabase
 			.from('products')
-			.update({ name, subtitle, description, category_id, price, compare_price, cost, sku, status, featured, updated_at: new Date().toISOString() })
+			.update({ name, subtitle, description, category_id, price, compare_price, cost, sku, status, featured, slug, meta_description, updated_at: new Date().toISOString() })
 			.eq('id', params.id);
 
 		if (err) return fail(500, { error: 'Error al guardar.' });
 
-		// Reemplazar variantes
 		await locals.supabase.from('product_variants').delete().eq('product_id', params.id);
 
 		const variantsRaw: Record<string, Record<string, string>> = {};
@@ -62,6 +63,21 @@ export const actions: Actions = {
 		throw redirect(303, '/admin/productos');
 	},
 
+	create_category: async ({ request, locals }) => {
+		const form = await request.formData();
+		const name = (form.get('name') as string)?.trim();
+		if (!name) return fail(400, { error: 'El nombre es requerido.' });
+
+		const { data: category, error: err } = await locals.supabase
+			.from('categories')
+			.insert({ name, slug: name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') })
+			.select('id, name, parent_id')
+			.single();
+
+		if (err) return fail(500, { error: 'Error al crear la categoría.' });
+		return { category };
+	},
+
 	upload_image: async ({ request, params, locals }) => {
 		const form = await request.formData();
 		const files = form.getAll('files') as File[];
@@ -80,7 +96,7 @@ export const actions: Actions = {
 		let nextPosition = (lastImg?.position ?? -1) + 1;
 
 		for (const file of validFiles) {
-			if (file.size > 5 * 1024 * 1024) continue; // skip >5MB silently
+			if (file.size > 5 * 1024 * 1024) continue;
 
 			const ext = file.name.split('.').pop();
 			const path = `products/${params.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
@@ -119,6 +135,14 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const id = form.get('id') as string;
 		await locals.supabase.from('product_images').delete().eq('id', id);
+		return { success: true };
+	},
+
+	tag_image_color: async ({ request, locals }) => {
+		const form = await request.formData();
+		const id    = form.get('id') as string;
+		const color = (form.get('color') as string) || null;
+		await locals.supabase.from('product_images').update({ color }).eq('id', id);
 		return { success: true };
 	}
 };
